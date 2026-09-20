@@ -34,6 +34,25 @@ def _sync_url() -> str:
 
 target_metadata = Base.metadata
 
+# Indexes that live only in the initial migration (DESC-ordered btree,
+# pgvector ivfflat, tsvector gin). SQLAlchemy autogenerate cannot
+# round-trip these expression forms cleanly, so excluding them from the
+# compare avoids spurious `alembic check` drift while still creating and
+# dropping them via the migration.
+_MIGRATION_ONLY_INDEXES = {
+    "ix_articles_outlet_published",
+    "ix_articles_embedding_ivfflat",
+    "ix_articles_fts_gin",
+    "ix_stories_last_seen_at_desc",
+    "ix_ingestion_runs_started_at_desc",
+}
+
+
+def _include_object(obj, name, type_, reflected, compare_to):
+    if type_ == "index" and name in _MIGRATION_ONLY_INDEXES:
+        return False
+    return True
+
 
 def run_migrations_offline() -> None:
     context.configure(
@@ -42,6 +61,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=_include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -57,6 +77,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=_include_object,
         )
         with context.begin_transaction():
             context.run_migrations()

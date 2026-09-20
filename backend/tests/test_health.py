@@ -1,4 +1,4 @@
-"""Smoke test: /health returns 200 without touching the database.
+"""Smoke tests: /health and the ORM model set.
 
 Uses a monkeypatched environment so importing src.main does not require a
 real DATABASE_URL, GROQ_API_KEY, or LLM_MODEL at CI startup.
@@ -31,3 +31,23 @@ def test_health(client: TestClient) -> None:
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+def test_models_import() -> None:
+    """Guard against a future models.py regression that would prevent
+    alembic env.py from loading Base.metadata for autogenerate compare.
+    Also asserts we have exactly the 9 tables from architecture §9."""
+    from src.db.models import Base
+
+    expected = {
+        "outlets",
+        "stories",
+        "analysis_runs",
+        "articles",
+        "article_analysis",
+        "story_comparisons",
+        "story_overrides",
+        "ingestion_runs",
+        "eval_labels",
+    }
+    assert set(Base.metadata.tables.keys()) == expected
