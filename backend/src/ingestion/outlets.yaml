@@ -1,18 +1,36 @@
-# Outlet registry. Loaded by src.ingestion.fetch and by seed_outlets.py.
+# Outlet registry. Loaded by src.ingestion.outlets and by seed_outlets.
 #
-# Populated in Week 1, step 5 (after all 5 Phase-1 RSS URLs have been
-# checked live). This file intentionally lists slugs only right now; the
-# concrete `rss_url` and `homepage_url` values land alongside the seed
-# script so both lists are reviewed together.
+# Phased rollout per architecture §13:
+#   Week 1: 5 outlets (below)
+#   Week 2: 10 outlets (add Phase-2)
+#   Week 3: 15 outlets (add Phase-3)
 #
-# Phased rollout per §13:
-#   Week 1: 5 outlets   (below)
-#   Week 2: 10 outlets  (add 5 more)
-#   Week 3: 15 outlets  (add 5 more)
+# BEFORE LOCKING PHASE-1: run `python scripts/verify_feeds.py` to confirm
+# each `rss_url` returns 200 with parseable RSS. If any feed has moved,
+# update it here and re-verify.
 
 phase_1:
   - slug: the-hindu
+    name: The Hindu
+    rss_url: https://www.thehindu.com/feeder/default.rss
+    website: https://www.thehindu.com
+
   - slug: times-of-india
+    name: Times of India
+    rss_url: https://timesofindia.indiatimes.com/rssfeedstopstories.cms
+    website: https://timesofindia.indiatimes.com
+
   - slug: indian-express
+    name: Indian Express
+    rss_url: https://indianexpress.com/section/india/feed/
+    website: https://indianexpress.com
+
   - slug: ndtv
-  - slug: theprint
+    name: NDTV
+    rss_url: https://feeds.feedburner.com/ndtvnews-top-stories
+    website: https://www.ndtv.com
+
+  - slug: hindustan-times
+    name: Hindustan Times
+    rss_url: https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml
+    website: https://www.hindustantimes.com

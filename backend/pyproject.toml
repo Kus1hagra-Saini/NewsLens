@@ -2,7 +2,7 @@
 name = "newslens-backend"
 version = "0.1.0"
 description = "NewsLens backend — FastAPI, ingestion, and analysis pipeline."
-readme = "../README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 
 # Stack pinned per architecture §7. Do not substitute technologies without
