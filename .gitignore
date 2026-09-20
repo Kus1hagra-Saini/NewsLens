@@ -1,0 +1,54 @@
+# Environments
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+.tox/
+
+# uv
+.uv/
+
+# Node / Vite
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Database dumps and local data
+*.sql.gz
+*.dump
+pg_dump_*
+/data/
+/tmp_articles/
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# Frontend build outputs
+frontend/build/
+frontend/.next/
+
+# Alembic (keep versions/, ignore local scratch)
+backend/alembic/scratch/
+
+# Eval scratch (real history lives at docs/eval_history.csv)
+backend/eval_scratch/

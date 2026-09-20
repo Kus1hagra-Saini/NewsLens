@@ -1,0 +1,18 @@
+# Outlet registry. Loaded by src.ingestion.fetch and by seed_outlets.py.
+#
+# Populated in Week 1, step 5 (after all 5 Phase-1 RSS URLs have been
+# checked live). This file intentionally lists slugs only right now; the
+# concrete `rss_url` and `homepage_url` values land alongside the seed
+# script so both lists are reviewed together.
+#
+# Phased rollout per §13:
+#   Week 1: 5 outlets   (below)
+#   Week 2: 10 outlets  (add 5 more)
+#   Week 3: 15 outlets  (add 5 more)
+
+phase_1:
+  - slug: the-hindu
+  - slug: times-of-india
+  - slug: indian-express
+  - slug: ndtv
+  - slug: theprint

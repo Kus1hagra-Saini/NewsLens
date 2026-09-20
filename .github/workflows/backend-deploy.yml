@@ -1,0 +1,24 @@
+name: backend-deploy
+
+# Triggers a Render deploy on every push to main that touches backend/.
+# The RENDER_DEPLOY_HOOK secret is the hook URL from the Render service
+# dashboard. No credentials are ever committed.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
+            echo "RENDER_DEPLOY_HOOK not set; skipping."
+            exit 0
+          fi
+          curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"

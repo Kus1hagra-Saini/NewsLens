@@ -1,0 +1,22 @@
+name: refresh-view
+
+# Refreshes the outlet_30d_stats materialized view once a day (§14).
+# Safe to run even while the view is empty.
+on:
+  schedule:
+    - cron: '15 2 * * *'   # 02:15 UTC daily
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Refresh materialized view
+        run: |
+          psql "$DATABASE_URL" -c \
+            "REFRESH MATERIALIZED VIEW CONCURRENTLY outlet_30d_stats;"

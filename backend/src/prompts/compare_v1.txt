@@ -1,0 +1,4 @@
+PLACEHOLDER — compare prompt v1.
+
+Populated in Week 2. Same versioning rule as enrich_v1.txt: never edit in
+place; add compare_v2.txt for revisions.

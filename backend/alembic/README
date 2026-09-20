@@ -1,0 +1,6 @@
+Alembic migrations for NewsLens.
+
+The first migration, `0001_initial_schema`, creates all nine tables from
+§9, the processing_state enum, every documented index, and the
+outlet_30d_stats materialized view. It is created in Week 1, step 4 —
+immediately after this scaffold is approved.
