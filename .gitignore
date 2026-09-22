@@ -52,3 +52,9 @@ backend/alembic/scratch/
 
 # Eval scratch (real history lives at docs/eval_history.csv)
 backend/eval_scratch/
+
+# Manual backup archives
+*.rar
+
+# Runtime audit logs from operational scripts
+backend/scripts/logs/
