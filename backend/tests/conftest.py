@@ -34,8 +34,10 @@ def db_url() -> str:
     url = _test_url()
     if not url:
         pytest.skip("DATABASE_URL_TEST (or DATABASE_URL) not set")
-    # Rewrite asyncpg → psycopg for these sync tests
-    return url.replace("+asyncpg", "+psycopg") if "+asyncpg" in url else url
+    # Normalize to postgresql+psycopg:// via the canonical helper so a
+    # bare postgresql:// URL (Neon's default) uses psycopg 3, not psycopg2.
+    from src.config import _to_sync_dsn
+    return _to_sync_dsn(url)
 
 
 @pytest.fixture(scope="session")

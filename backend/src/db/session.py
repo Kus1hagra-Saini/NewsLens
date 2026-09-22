@@ -20,7 +20,7 @@ from src.config import get_settings
 
 @lru_cache(maxsize=1)
 def _engine():
-    return create_async_engine(get_settings().database_url, pool_pre_ping=True)
+    return create_async_engine(get_settings().async_database_url, pool_pre_ping=True)
 
 
 @lru_cache(maxsize=1)

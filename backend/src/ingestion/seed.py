@@ -23,14 +23,9 @@ from src.ingestion.outlets import OutletSpec, load_outlets
 log = logging.getLogger(__name__)
 
 
-def _sync_url() -> str:
-    url = get_settings().database_url
-    return url.replace("+asyncpg", "+psycopg") if "+asyncpg" in url else url
-
-
 def seed_outlets(specs: list[OutletSpec]) -> tuple[int, int]:
     """Upsert `specs` into outlets. Returns (inserted, updated) counts."""
-    engine = create_engine(_sync_url(), pool_pre_ping=True)
+    engine = create_engine(get_settings().sync_database_url, pool_pre_ping=True)
     inserted = 0
     updated = 0
     with engine.begin() as conn:

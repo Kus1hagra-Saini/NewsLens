@@ -289,18 +289,24 @@ def extract_articles(
     *,
     fetcher: HttpFetcher,
     batch_limit: int = 100,
+    outlet_id: int | None = None,
 ) -> tuple[int, int]:
     """Advance up to `batch_limit` articles from `discovered` to `extracted`.
 
     Returns (extracted, failed) — failed counts only rows that hit the
     3-failure cap this run.
+
+    If *outlet_id* is given, only articles belonging to that outlet are
+    considered. This is useful in tests that share a database with real
+    ingestion data.
     """
     q = (
         select(Article)
         .where(Article.processing_state == "discovered")
-        .order_by(Article.id)
-        .limit(batch_limit)
     )
+    if outlet_id is not None:
+        q = q.where(Article.outlet_id == outlet_id)
+    q = q.order_by(Article.id).limit(batch_limit)
     articles = list(session.scalars(q))
     if not articles:
         return 0, 0

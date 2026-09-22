@@ -51,3 +51,53 @@ def test_models_import() -> None:
         "eval_labels",
     }
     assert set(Base.metadata.tables.keys()) == expected
+
+
+
+# ---------------------------------------------------------------------------
+# DSN normalization — psycopg2 must never be selected. See src/config.py.
+# ---------------------------------------------------------------------------
+import pytest as _pt
+
+
+@_pt.mark.parametrize("raw, expected", [
+    ("postgresql://u:p@h/d?sslmode=require",
+     "postgresql+psycopg://u:p@h/d?sslmode=require"),
+    ("postgres://u:p@h/d",
+     "postgresql+psycopg://u:p@h/d"),
+    ("postgresql+asyncpg://u:p@h/d?ssl=require",
+     "postgresql+psycopg://u:p@h/d?ssl=require"),
+    ("postgresql+psycopg://u:p@h/d?sslmode=require",
+     "postgresql+psycopg://u:p@h/d?sslmode=require"),
+])
+def test_to_sync_dsn_normalizes_every_accepted_shape(raw, expected):
+    from src.config import _to_sync_dsn
+    assert _to_sync_dsn(raw) == expected
+
+
+@_pt.mark.parametrize("raw, expected", [
+    ("postgresql://u:p@h/d?sslmode=require",
+     "postgresql+asyncpg://u:p@h/d?sslmode=require"),
+    ("postgres://u:p@h/d",
+     "postgresql+asyncpg://u:p@h/d"),
+    ("postgresql+asyncpg://u:p@h/d?ssl=require",
+     "postgresql+asyncpg://u:p@h/d?ssl=require"),
+    ("postgresql+psycopg://u:p@h/d?sslmode=require",
+     "postgresql+asyncpg://u:p@h/d?sslmode=require"),
+])
+def test_to_async_dsn_normalizes_every_accepted_shape(raw, expected):
+    from src.config import _to_async_dsn
+    assert _to_async_dsn(raw) == expected
+
+
+def test_settings_sync_and_async_properties(monkeypatch):
+    """End-to-end: bare postgresql:// URL selects psycopg (sync) and
+    asyncpg (async), not psycopg2."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/d?sslmode=require")
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.setenv("LLM_MODEL", "x")
+    from src.config import get_settings
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.sync_database_url == "postgresql+psycopg://u:p@h/d?sslmode=require"
+    assert s.async_database_url == "postgresql+asyncpg://u:p@h/d?sslmode=require"

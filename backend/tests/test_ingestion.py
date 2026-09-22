@@ -173,7 +173,8 @@ def test_extract_advances_state_and_stores_body(db_session):
     })
     discover_articles(db_session, outlet, fetcher=fetcher)
 
-    extracted, failed = extract_articles(db_session, fetcher=fetcher)
+    extracted, failed = extract_articles(db_session, fetcher=fetcher,
+                                         outlet_id=outlet.id)
     assert extracted == 1
     assert failed == 0
 
@@ -197,7 +198,7 @@ def test_extract_retries_then_gives_up_after_max_attempts(db_session):
 
     # Attempts 1..MAX_ATTEMPTS
     for i in range(1, MAX_ATTEMPTS + 1):
-        extract_articles(db_session, fetcher=fetcher)
+        extract_articles(db_session, fetcher=fetcher, outlet_id=outlet.id)
         db_session.expire_all()
         a = db_session.scalar(select(Article).where(Article.url == url))
         if i < MAX_ATTEMPTS:
@@ -210,7 +211,8 @@ def test_extract_retries_then_gives_up_after_max_attempts(db_session):
             assert a.state_error and "500" in a.state_error
 
     # A subsequent extract call should NOT touch the failed article.
-    extracted_after, _ = extract_articles(db_session, fetcher=fetcher)
+    extracted_after, _ = extract_articles(db_session, fetcher=fetcher,
+                                          outlet_id=outlet.id)
     assert extracted_after == 0
 
 
@@ -244,14 +246,14 @@ def test_extract_success_after_transient_failures_resets_attempt_count(db_sessio
     discover_articles(db_session, outlet, fetcher=fetcher)
 
     # Attempt 1 → 503 → attempt_count=1, still discovered
-    extract_articles(db_session, fetcher=fetcher)
+    extract_articles(db_session, fetcher=fetcher, outlet_id=outlet.id)
     db_session.expire_all()
     a = db_session.scalar(select(Article).where(Article.url == url))
     assert a.processing_state == "discovered"
     assert a.attempt_count == 1
 
     # Attempt 2 → 200 → extracted, attempt_count reset to 0
-    extract_articles(db_session, fetcher=fetcher)
+    extract_articles(db_session, fetcher=fetcher, outlet_id=outlet.id)
     db_session.expire_all()
     a = db_session.scalar(select(Article).where(Article.url == url))
     assert a.processing_state == "extracted"
@@ -268,7 +270,7 @@ def test_embed_advances_state_and_writes_vector(db_session):
     fetcher = FakeFetcher({outlet.rss_url: FakeResponse(200, xml),
                            url: FakeResponse(200, html)})
     discover_articles(db_session, outlet, fetcher=fetcher)
-    extract_articles(db_session, fetcher=fetcher)
+    extract_articles(db_session, fetcher=fetcher, outlet_id=outlet.id)
 
     n = embed_articles(db_session, embedder=HashEmbedder())
     assert n == 1
@@ -306,7 +308,7 @@ def test_cluster_creates_new_story_and_attaches_similar_article(db_session):
         urls[2]: FakeResponse(200, make_article_html("_test cricket", body_cricket)),
     })
     discover_articles(db_session, outlet, fetcher=fetcher)
-    extract_articles(db_session, fetcher=fetcher)
+    extract_articles(db_session, fetcher=fetcher, outlet_id=outlet.id)
     embed_articles(db_session, embedder=HashEmbedder())
 
     result = cluster_articles(db_session, threshold=0.5)  # relaxed for HashEmbedder
@@ -398,3 +400,115 @@ def test_orchestrator_records_skipped_when_disabled(db_session, monkeypatch):
     )
     assert run is not None
     assert run.status == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# Batch-drain tests
+# ---------------------------------------------------------------------------
+def test_extract_drains_with_small_batch_limit(db_session):
+    """extract_articles with batch_limit=5 needs multiple calls to drain 12 articles."""
+    outlet = _make_outlet(db_session, slug="_test_drain_ext")
+    n = 12
+    now = datetime.now(tz=timezone.utc)
+    fmt = "%a, %d %b %Y %H:%M:%S +0000"
+
+    items = []
+    responses: dict[str, FakeResponse] = {}
+    for i in range(n):
+        url = f"_test_drain_ext_{i:03d}"
+        pub = (now - timedelta(hours=n - i)).strftime(fmt)
+        items.append({"title": f"_test drain ext {i}", "link": url, "pubDate": pub})
+        body = f"Body for drain extraction test article number {i}. " * 20
+        responses[url] = FakeResponse(200, make_article_html(f"_test drain ext {i}", body))
+
+    xml = make_rss(items)
+    responses[outlet.rss_url] = FakeResponse(200, xml)
+    fetcher = FakeFetcher(responses)
+
+    discover_articles(db_session, outlet, fetcher=fetcher)
+
+    # Drain with batch_limit=5 — should take 3 productive + 1 empty call
+    total_extracted = 0
+    calls = 0
+    while True:
+        extracted, failed = extract_articles(db_session, fetcher=fetcher,
+                                               batch_limit=5, outlet_id=outlet.id)
+        total_extracted += extracted
+        calls += 1
+        if extracted == 0 and failed == 0:
+            break
+
+    assert total_extracted == n
+    assert calls == 4  # 5 + 5 + 2 + 0(break)
+
+    # All articles should now be in 'extracted' state
+    rows = db_session.scalars(
+        select(Article).where(Article.url.like("_test_drain_ext_%"))
+    ).all()
+    assert all(r.processing_state == "extracted" for r in rows)
+
+
+def test_orchestrator_drains_all_articles_beyond_batch_limit(db_session, monkeypatch):
+    """run_once processes >100 articles through the full pipeline in one call."""
+    outlet = _make_outlet(db_session, slug="the-hindu", rss="_test_rss_drain")
+
+    n_articles = 120  # > default batch_limit of 100
+    now = datetime.now(tz=timezone.utc)
+    fmt = "%a, %d %b %Y %H:%M:%S +0000"
+
+    items = []
+    responses: dict[str, FakeResponse] = {}
+    for i in range(n_articles):
+        url = f"_test_drain_{i:04d}"
+        pub = (now - timedelta(hours=n_articles - i)).strftime(fmt)
+        items.append({"title": f"_test drain article {i}", "link": url, "pubDate": pub})
+        body = f"Unique body text for drain test article number {i} topic_{i % 7}. " * 20
+        responses[url] = FakeResponse(200, make_article_html(f"_test drain {i}", body))
+
+    xml = make_rss(items)
+    responses["_test_rss_drain"] = FakeResponse(200, xml)
+
+    class DrainFactory(FakeFetcher):
+        def __init__(self):
+            super().__init__(responses)
+
+    from src.config import get_settings
+    get_settings.cache_clear()
+    monkeypatch.setenv("GROQ_API_KEY", "test")
+    monkeypatch.setenv("LLM_MODEL", "test")
+
+    started = datetime.now(tz=timezone.utc)
+    rc = run_once(
+        phases=["phase_1"],
+        embedder=HashEmbedder(),
+        triggered_by="manual",
+        fetcher_factory=DrainFactory,
+    )
+    assert rc == 0
+
+    # Every article should have reached 'clustered' state
+    state_counts = dict(
+        db_session.execute(
+            select(Article.processing_state, func.count())
+            .where(Article.url.like("_test_drain_%"))
+            .group_by(Article.processing_state)
+        ).all()
+    )
+    assert state_counts.get("clustered", 0) == n_articles, (
+        f"Expected all {n_articles} in 'clustered', got: {state_counts}"
+    )
+    assert "discovered" not in state_counts
+    assert "extracted" not in state_counts
+    assert "embedded" not in state_counts
+
+    # Ingestion run row should reflect the full count
+    run_row = db_session.scalar(
+        select(IngestionRun)
+        .where(IngestionRun.started_at >= started)
+        .order_by(IngestionRun.id.desc())
+        .limit(1)
+    )
+    assert run_row is not None
+    assert run_row.status == "success"
+    assert run_row.articles_discovered == n_articles
+    assert run_row.articles_inserted == n_articles

@@ -41,11 +41,6 @@ from src.ingestion.outlets import load_outlets
 log = logging.getLogger(__name__)
 
 
-def _sync_url() -> str:
-    url = get_settings().database_url
-    return url.replace("+asyncpg", "+psycopg") if "+asyncpg" in url else url
-
-
 def run_once(
     *,
     phases: list[str],
@@ -62,7 +57,7 @@ def run_once(
         _record_skipped(triggered_by)
         return 0
 
-    engine = create_engine(_sync_url(), pool_pre_ping=True)
+    engine = create_engine(get_settings().sync_database_url, pool_pre_ping=True)
     Session_ = sessionmaker(bind=engine, expire_on_commit=False)
 
     # Open ingestion_runs row
@@ -97,17 +92,25 @@ def run_once(
                         log.error("discover: %s crashed: %s", outlet.slug, exc)
                         totals["failed"] += 1
 
-                # STAGE 2: extraction — all outlets pooled
-                extracted, failed_x = extract_articles(session, fetcher=fetcher)
-                totals["failed"] += failed_x
+                # STAGE 2: extraction — drain all discovered articles.
+                # Each call advances up to batch_limit (default 100)
+                # rows; loop until no more progress is made so a single
+                # --once run processes every eligible article.
+                while True:
+                    extracted, failed_x = extract_articles(session, fetcher=fetcher)
+                    totals["failed"] += failed_x
+                    if extracted == 0 and failed_x == 0:
+                        break
 
-                # STAGE 3: embeddings
+                # STAGE 3: embeddings — drain all extracted articles
                 if not skip_embed:
-                    embed_articles(session, embedder=embedder)
+                    while embed_articles(session, embedder=embedder) > 0:
+                        pass
 
-                # STAGE 4: clustering
+                # STAGE 4: clustering — drain all embedded articles
                 if not skip_cluster and not skip_embed:
-                    cluster_articles(session)
+                    while cluster_articles(session).articles_clustered > 0:
+                        pass
 
             finally:
                 if hasattr(fetcher, "close"):
@@ -162,7 +165,7 @@ def _close_run(engine, run_id: int, status: str, totals: dict, error: str | None
 
 def _record_skipped(triggered_by: str) -> None:
     """Record a skipped run when INGESTION_ENABLED=false."""
-    engine = create_engine(_sync_url(), pool_pre_ping=True)
+    engine = create_engine(get_settings().sync_database_url, pool_pre_ping=True)
     with engine.begin() as conn:
         conn.execute(
             IngestionRun.__table__.insert().values(

@@ -22,14 +22,16 @@ if config.config_file_name is not None:
 
 
 def _sync_url() -> str:
-    """Return DATABASE_URL rewritten for the sync psycopg driver."""
-    url = os.environ.get("DATABASE_URL") or get_settings().database_url
-    # asyncpg → psycopg. Both talk to the same Postgres.
-    return url.replace("+asyncpg", "+psycopg").replace(
-        "postgresql://", "postgresql+psycopg://", 1
-    ) if "+asyncpg" not in url and "+psycopg" not in url else url.replace(
-        "+asyncpg", "+psycopg"
-    )
+    """Return DATABASE_URL rewritten for the sync psycopg 3 driver.
+
+    Delegates to src.config._to_sync_dsn so alembic and the ingestion
+    pipeline share one canonical URL-normalization path. Falls back to
+    the raw DATABASE_URL env var when Settings hasn't been loaded (some
+    alembic invocations bypass .env loading).
+    """
+    from src.config import _to_sync_dsn
+    raw = os.environ.get("DATABASE_URL") or get_settings().database_url
+    return _to_sync_dsn(raw)
 
 
 target_metadata = Base.metadata
