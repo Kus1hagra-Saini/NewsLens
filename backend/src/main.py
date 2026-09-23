@@ -1,7 +1,9 @@
 """FastAPI entrypoint.
 
-Week 1 scaffold: only `/health` is wired. API routers under `src.api.*` are
-placeholders that will be included in Week 3 as they come online.
+Wires ``/health`` plus the API routers under ``src.api.*``.
+
+Kept intentionally small — router modules own their own path prefixes
+and response models; this file only assembles them.
 """
 
 from __future__ import annotations
@@ -29,10 +31,18 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    # Routers wired in later weeks:
-    #   from src.api import stories, outlets, trends, search, export, eval as eval_api
-    #   app.include_router(stories.router)
-    #   ...
+    # Import routers lazily so pure /health tests don't need the DB
+    # session module imported at app startup (they still do end up
+    # importing it via the routers below, but the import graph stays
+    # explicit and grep-able).
+    from src.api import articles, outlets, overview, search, stories, trends
+
+    app.include_router(overview.router)
+    app.include_router(stories.router)
+    app.include_router(articles.router)
+    app.include_router(outlets.router)
+    app.include_router(search.router)
+    app.include_router(trends.router)
 
     return app
 
