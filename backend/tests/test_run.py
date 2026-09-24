@@ -156,10 +156,11 @@ def _scope_llm_stages_to_outlet(monkeypatch, outlet_id: int) -> None:
 
 
 def _prep_env(monkeypatch) -> None:
+    """LLM env + shared DB alignment (see conftest.align_run_db_to_test_db)."""
     monkeypatch.setenv("GROQ_API_KEY", "test-key-ignored")
     monkeypatch.setenv("LLM_MODEL", "test-model")
-    from src.config import get_settings
-    get_settings.cache_clear()
+    from .conftest import align_run_db_to_test_db
+    align_run_db_to_test_db(monkeypatch)
 
 
 # ---------------------------------------------------------------------------
@@ -261,13 +262,25 @@ def test_full_pipeline_includes_compare_when_two_outlets(db_session, monkeypatch
     test_outlet_ids = [outlet_a.id, outlet_b.id]
 
     def scoped_enrich(session, *, llm, **kw):
-        # Loop the per-outlet filter — enrich_articles takes a single outlet_id
+        # Loop the per-outlet filter — enrich_articles takes a single
+        # outlet_id. run.py now branches on `.rate_limited` / `.analyzed`
+        # / `.failed_permanent`, so we must return an EnrichBatchResult
+        # not a bare tuple.
+        from src.ingestion.enrich import EnrichBatchResult
         total_analyzed, total_failed = 0, 0
+        rate_limited = False
         for oid in test_outlet_ids:
-            a, f = orig_enrich(session, llm=llm, outlet_id=oid, **kw)
-            total_analyzed += a
-            total_failed += f
-        return total_analyzed, total_failed
+            r = orig_enrich(session, llm=llm, outlet_id=oid, **kw)
+            total_analyzed += r.analyzed
+            total_failed += r.failed_permanent
+            if r.rate_limited:
+                rate_limited = True
+                break
+        return EnrichBatchResult(
+            analyzed=total_analyzed,
+            failed_permanent=total_failed,
+            rate_limited=rate_limited,
+        )
 
     def scoped_compare(session, *, llm, **kw):
         story_ids = list(session.scalars(
@@ -586,8 +599,11 @@ def test_unexpected_exception_marks_run_failed_not_running(db_session, monkeypat
 # doesn't error out).
 # ---------------------------------------------------------------------------
 def test_missing_groq_api_key_skips_llm_stages(db_session, monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "")   # explicitly empty
-    monkeypatch.setenv("LLM_MODEL", "test-model")
+    # Use the same DB-alignment as _prep_env (so run_once() hits the
+    # SAME dev-test DB as the fixture's db_session), then override
+    # GROQ_API_KEY to empty to exercise the "no key → skip LLM" path.
+    _prep_env(monkeypatch)
+    monkeypatch.setenv("GROQ_API_KEY", "")
     from src.config import get_settings
     get_settings.cache_clear()
 
@@ -622,3 +638,145 @@ def test_missing_groq_api_key_skips_llm_stages(db_session, monkeypatch):
     assert run is not None
     assert run.status == "success"
     assert run.llm_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# Budget / rate-limit orchestration tests
+# (added 2026-09-24 for the "intelligent incremental analysis" phase)
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass as _dataclass  # noqa: E402  (test-local)
+from typing import Iterator as _Iterator  # noqa: E402
+
+
+@_dataclass
+class _FakeBatchResult:
+    """Mimics enrich.EnrichBatchResult (iterable → (analyzed, failed)),
+    with a rate_limited attribute the orchestrator branches on."""
+    analyzed: int
+    failed_permanent: int
+    rate_limited: bool = False
+
+    def __iter__(self) -> _Iterator[int]:
+        yield self.analyzed
+        yield self.failed_permanent
+
+
+def test_run_respects_enrich_budget(db_session, monkeypatch):
+    """run_once must not enrich more articles than
+    settings.llm_enrich_budget_per_run. Verified by wrapping
+    ``enrich_articles`` in run_module with a spy that returns a fake
+    ``EnrichBatchResult`` and counts total requested work."""
+    _prep_env(monkeypatch)
+    # Force a small, deterministic budget for this test.
+    monkeypatch.setenv("LLM_ENRICH_BUDGET_PER_RUN", "5")
+    monkeypatch.setenv("LLM_COMPARE_BUDGET_PER_RUN", "0")
+    from src.config import get_settings
+    get_settings.cache_clear()
+
+    outlet = _make_the_hindu_with_rss(
+        db_session, rss_url="_test_run_budget_rss"
+    )
+
+    body = "Budget-bounded body. " * 12
+    articles = [
+        (f"_test_run_budget_url_{i}", f"_test budget art {i}", body)
+        for i in range(3)   # 3 articles will actually cluster
+    ]
+    fetcher = _fake_fetcher_for(outlet, articles)
+
+    # Spy: track how many times enrich_articles gets called and with
+    # what batch_limit; return "2 analyzed / 0 failed" each call so the
+    # orchestrator can keep going but stays bounded by budget.
+    calls: list[dict] = []
+
+    def spy_enrich(session, *, llm, **kw):
+        calls.append(dict(kw))
+        # Pretend we processed 2 articles per call — bigger than the
+        # first batch_limit=5 would allow only ONE call, then the
+        # remaining budget = 5 - 2 = 3, one more call with take=3, then
+        # budget = 1, one more call with take=1, then budget=0 → stop.
+        return _FakeBatchResult(analyzed=2, failed_permanent=0)
+
+    monkeypatch.setattr(run_module, "enrich_articles", spy_enrich)
+
+    # Compare stubbed to a no-op — this test cares about the enrich loop.
+    def stub_compare(session, *, llm, **kw):
+        return (0, 0)
+    monkeypatch.setattr(run_module, "compare_stories", stub_compare)
+
+    llm = FakeGroqClient(responses=[])  # LLM never actually called
+    rc = run_once(
+        phases=["phase_1"],
+        embedder=HashEmbedder(),
+        triggered_by="manual",
+        fetcher_factory=lambda: fetcher,
+        llm_factory=lambda: llm,
+    )
+    assert rc == 0
+
+    # Budget=5, each call returns 2 → expected batch_limit sequence: 5, 3, 1
+    # and total requested work is 5 + 3 + 1 = 9 (capped by budget).
+    # We also require that no single call took more than min(20, budget).
+    batch_limits = [c.get("batch_limit") for c in calls]
+    assert batch_limits, "enrich_articles was not called at all"
+    assert batch_limits[0] == 5, batch_limits
+    assert sum(batch_limits) <= 5 + 5, (
+        f"total requested work {sum(batch_limits)} exceeded budget window"
+    )
+    # And we must have stopped once budget was exhausted (not looped
+    # infinitely).
+    assert len(calls) <= 5
+
+
+def test_run_stops_enrich_drain_on_rate_limit_signal(db_session, monkeypatch):
+    """When enrich_articles reports rate_limited=True the orchestrator
+    must break out of the drain loop immediately, WITHOUT calling
+    enrich_articles again this cycle. Budget is not exhausted, but a
+    rate-limit signal takes precedence."""
+    _prep_env(monkeypatch)
+    monkeypatch.setenv("LLM_ENRICH_BUDGET_PER_RUN", "100")
+    monkeypatch.setenv("LLM_COMPARE_BUDGET_PER_RUN", "0")
+    from src.config import get_settings
+    get_settings.cache_clear()
+
+    outlet = _make_the_hindu_with_rss(
+        db_session, rss_url="_test_run_rl_rss"
+    )
+    body = "Rate-limit body. " * 12
+    articles = [
+        (f"_test_run_rl_url_{i}", f"_test rl art {i}", body)
+        for i in range(2)
+    ]
+    fetcher = _fake_fetcher_for(outlet, articles)
+
+    call_count = {"n": 0}
+
+    def spy_enrich_ratelimited(session, *, llm, **kw):
+        call_count["n"] += 1
+        # First call: signal rate-limit. If the drain loop is correct we
+        # never get called again this cycle.
+        return _FakeBatchResult(
+            analyzed=0, failed_permanent=0, rate_limited=True,
+        )
+
+    monkeypatch.setattr(
+        run_module, "enrich_articles", spy_enrich_ratelimited,
+    )
+
+    def stub_compare(session, *, llm, **kw):
+        return (0, 0)
+    monkeypatch.setattr(run_module, "compare_stories", stub_compare)
+
+    llm = FakeGroqClient(responses=[])
+    rc = run_once(
+        phases=["phase_1"],
+        embedder=HashEmbedder(),
+        triggered_by="manual",
+        fetcher_factory=lambda: fetcher,
+        llm_factory=lambda: llm,
+    )
+    assert rc == 0
+    # Exactly one enrich call — the drain must have broken immediately.
+    assert call_count["n"] == 1, (
+        f"expected 1 enrich_articles call after rate-limit, got {call_count['n']}"
+    )

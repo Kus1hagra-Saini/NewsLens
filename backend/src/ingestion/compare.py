@@ -1,10 +1,10 @@
 """Per-story LLM comparison summary.
 
-Reads stories whose articles are in state ``analyzed`` and, when there
-are at least ``MIN_ARTICLES`` articles from at least ``MIN_OUTLETS``
-distinct outlets, calls the LLM to produce a comparison, upserts one
-``story_comparisons`` row (latest-wins on ``story_id``), and advances
-those articles to ``complete``.
+Reads stories whose articles are in state ``analyzed`` or ``complete``
+and, when there are at least ``MIN_ARTICLES`` articles from at least
+``MIN_OUTLETS`` distinct outlets, calls the LLM to produce a comparison,
+upserts one ``story_comparisons`` row (latest-wins on ``story_id``),
+and advances any still-``analyzed`` articles to ``complete``.
 
 Design notes (arch §9 / §10 step 9 / §17 / Appendix C):
   - ``framing_spread`` is computed DETERMINISTICALLY as the population
@@ -12,9 +12,9 @@ Design notes (arch §9 / §10 step 9 / §17 / Appendix C):
     values. The LLM does not compute it. Matches the schema comment
     "std-dev of framing across outlets".
   - ``coverage_matrix`` uses a FIXED theme list — the union of
-    ``article_analysis.key_themes`` across the story's analyzed
-    articles, first-seen order. The LLM is instructed (in the prompt)
-    to output exactly those themes under every outlet.
+    ``article_analysis.key_themes`` across the story's articles,
+    first-seen order. The LLM is instructed (in the prompt) to output
+    exactly those themes under every outlet.
   - ``not_present_here`` is LLM-generated and grounded by prompt
     instruction on the enrichment payloads that were passed in.
   - No per-story ``attempt_count`` column exists (schema is locked);
@@ -25,6 +25,18 @@ Design notes (arch §9 / §10 step 9 / §17 / Appendix C):
   - The LLM client (``LLMClient`` Protocol and ``GroqClient`` impl)
     is imported from ``enrich.py`` — one implementation for the whole
     pipeline.
+
+Incremental / late-arriving article behaviour (added 2026-09-24):
+  - Candidate selection considers articles in state IN
+    ('analyzed', 'complete') so that a previously-compared story
+    (articles now ``complete``) can be re-compared once a new outlet
+    joins and reaches ``analyzed`` state.
+  - The "fresh coverage" gate requires the story's latest
+    state_updated_at for an ``analyzed`` article to post-date the
+    existing ``story_comparisons.generated_at``. Stories that are fully
+    ``complete`` with no new arrivals are not re-compared each cycle.
+  - Existing ``article_analysis`` rows are reused as-is. No article is
+    re-enriched merely because a story gained a new sibling.
 """
 
 from __future__ import annotations
@@ -35,7 +47,7 @@ import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -88,32 +100,109 @@ def _render_prompt(template: str, *, story_title: str,
     )
 
 
+_CANDIDATES_SQL = text("""
+    WITH story_stats AS (
+      SELECT a.story_id,
+             COUNT(*)                    AS n_articles,
+             COUNT(DISTINCT a.outlet_id) AS n_outlets,
+             -- Fresh coverage marker: the latest state_updated_at
+             -- across articles CURRENTLY in state='analyzed' — i.e.
+             -- articles that have not yet been included in a comparison.
+             -- NULL when every article is already 'complete'.
+             MAX(a.state_updated_at) FILTER (
+               WHERE a.processing_state = 'analyzed'
+             )                           AS latest_analyzed_at
+        FROM articles a
+       WHERE a.story_id IS NOT NULL
+         AND a.processing_state IN ('analyzed', 'complete')
+       GROUP BY a.story_id
+      HAVING COUNT(*) >= :min_articles
+         AND COUNT(DISTINCT a.outlet_id) >= :min_outlets
+    )
+    SELECT s.story_id
+      FROM story_stats s
+      LEFT JOIN story_comparisons sc ON sc.story_id = s.story_id
+     WHERE
+        -- Not yet compared (any state combo above the thresholds
+        -- qualifies for the first comparison), OR
+        sc.story_id IS NULL
+        OR
+        -- Fresh 'analyzed' coverage arrived after the last comparison.
+        (s.latest_analyzed_at IS NOT NULL
+         AND s.latest_analyzed_at > sc.generated_at)
+     ORDER BY s.story_id
+     LIMIT :lim
+""")
+
+
 def _story_candidates(
     session: Session, *,
     batch_limit: int,
     story_ids: list[int] | None,
 ) -> list[int]:
-    """Return story_ids whose analyzed articles satisfy the thresholds."""
+    """Return story_ids qualified for (re)comparison.
+
+    A story qualifies when it has >= MIN_ARTICLES articles from >=
+    MIN_OUTLETS distinct outlets in state ('analyzed', 'complete') AND
+    either has no prior comparison OR has a currently-'analyzed'
+    article that post-dates the existing comparison ("fresh coverage"
+    gate — see module docstring).
+
+    ``story_ids`` scopes to a specific list (used by tests and by a
+    hypothetical manual retry path). If explicit ``story_ids`` is given
+    we apply the fresh-coverage gate anyway — you never want a caller
+    to trigger a no-op re-compare that spends LLM budget on a story
+    whose comparison is already current.
+    """
     if story_ids is not None and not story_ids:
         return []
 
-    q = (
-        select(
-            Article.story_id,
-            func.count().label("n_articles"),
-            func.count(Article.outlet_id.distinct()).label("n_outlets"),
-        )
-        .where(Article.processing_state == "analyzed")
-        .where(Article.story_id.isnot(None))
-        .group_by(Article.story_id)
-        .having(func.count() >= MIN_ARTICLES)
-        .having(func.count(Article.outlet_id.distinct()) >= MIN_OUTLETS)
-    )
-    if story_ids is not None:
-        q = q.where(Article.story_id.in_(story_ids))
-    q = q.order_by(Article.story_id).limit(batch_limit)
+    if story_ids is None:
+        rows = session.execute(
+            _CANDIDATES_SQL,
+            {
+                "min_articles": MIN_ARTICLES,
+                "min_outlets": MIN_OUTLETS,
+                "lim": batch_limit,
+            },
+        ).all()
+    else:
+        # Same shape as the CTE but scoped to the caller-supplied ids.
+        ids_sql = ",".join(str(int(i)) for i in story_ids)
+        scoped_sql = text(f"""
+            WITH story_stats AS (
+              SELECT a.story_id,
+                     COUNT(*)                    AS n_articles,
+                     COUNT(DISTINCT a.outlet_id) AS n_outlets,
+                     MAX(a.state_updated_at) FILTER (
+                       WHERE a.processing_state = 'analyzed'
+                     )                           AS latest_analyzed_at
+                FROM articles a
+               WHERE a.story_id IN ({ids_sql})
+                 AND a.processing_state IN ('analyzed', 'complete')
+               GROUP BY a.story_id
+              HAVING COUNT(*) >= :min_articles
+                 AND COUNT(DISTINCT a.outlet_id) >= :min_outlets
+            )
+            SELECT s.story_id
+              FROM story_stats s
+              LEFT JOIN story_comparisons sc ON sc.story_id = s.story_id
+             WHERE sc.story_id IS NULL
+                OR (s.latest_analyzed_at IS NOT NULL
+                    AND s.latest_analyzed_at > sc.generated_at)
+             ORDER BY s.story_id
+             LIMIT :lim
+        """)
+        rows = session.execute(
+            scoped_sql,
+            {
+                "min_articles": MIN_ARTICLES,
+                "min_outlets": MIN_OUTLETS,
+                "lim": batch_limit,
+            },
+        ).all()
 
-    return [r.story_id for r in session.execute(q).all()]
+    return [int(r.story_id) for r in rows]
 
 
 def _load_story_context(
@@ -124,12 +213,17 @@ def _load_story_context(
     if story is None:
         return None, [], []
 
+    # Load ALL articles for this story that have a persisted analysis
+    # AND are in a state that reflects successful analysis — i.e.
+    # 'analyzed' (fresh) or 'complete' (included in a previous
+    # comparison). Reuses existing article_analysis rows verbatim; no
+    # article is re-enriched merely because a story grew.
     rows = session.execute(
         select(Article, Outlet.slug, ArticleAnalysis)
         .join(Outlet, Outlet.id == Article.outlet_id)
         .join(ArticleAnalysis, ArticleAnalysis.article_id == Article.id)
         .where(Article.story_id == story_id)
-        .where(Article.processing_state == "analyzed")
+        .where(Article.processing_state.in_(("analyzed", "complete")))
         .order_by(Article.id)
     ).all()
 

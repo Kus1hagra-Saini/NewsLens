@@ -29,6 +29,25 @@ def _test_url() -> str | None:
     return os.environ.get("DATABASE_URL_TEST") or os.environ.get("DATABASE_URL")
 
 
+def align_run_db_to_test_db(monkeypatch) -> None:
+    """Force ``get_settings().database_url`` (used by ``run_once()``) to
+    point at the same Postgres as the ``db_session`` fixture reads.
+
+    The fixture prefers ``DATABASE_URL_TEST`` when set; ``run_once()``
+    reads ``DATABASE_URL`` from ``.env``. If those disagree (the safe
+    prod-vs-dev-test layout), the fixture writes to dev-test while
+    ``run_once()`` writes to whatever ``DATABASE_URL`` names — and the
+    fixture then sees "no test articles / no ingestion_runs row" for
+    the run. Call this from any test that starts ``run_once()`` so
+    both sides hit the same DB.
+    """
+    test_url = os.environ.get("DATABASE_URL_TEST")
+    if test_url:
+        monkeypatch.setenv("DATABASE_URL", test_url)
+    from src.config import get_settings
+    get_settings.cache_clear()
+
+
 @pytest.fixture(scope="session")
 def db_url() -> str:
     url = _test_url()

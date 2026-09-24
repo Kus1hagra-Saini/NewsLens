@@ -350,11 +350,14 @@ def test_orchestrator_records_ingestion_run_success(db_session, monkeypatch):
                 "_test_url_orch_a":    FakeResponse(200, html),
             })
 
-    # Give run_once a real DATABASE_URL — same as our fixture's DB
-    from src.config import get_settings
-    get_settings.cache_clear()
+    # Give run_once a real DATABASE_URL — same as our fixture's DB.
+    # align_run_db_to_test_db forces DATABASE_URL := DATABASE_URL_TEST
+    # (when set) and clears the settings cache so run_once() reads the
+    # dev-test DB, not whatever DATABASE_URL in .env points at.
     monkeypatch.setenv("GROQ_API_KEY", "test")
     monkeypatch.setenv("LLM_MODEL",  "test")
+    from .conftest import align_run_db_to_test_db
+    align_run_db_to_test_db(monkeypatch)
 
     started = datetime.now(tz=timezone.utc)
     rc = run_once(
@@ -381,11 +384,11 @@ def test_orchestrator_records_ingestion_run_success(db_session, monkeypatch):
 
 
 def test_orchestrator_records_skipped_when_disabled(db_session, monkeypatch):
-    from src.config import get_settings
-    get_settings.cache_clear()
     monkeypatch.setenv("INGESTION_ENABLED", "false")
     monkeypatch.setenv("GROQ_API_KEY", "test")
     monkeypatch.setenv("LLM_MODEL",  "test")
+    from .conftest import align_run_db_to_test_db
+    align_run_db_to_test_db(monkeypatch)
 
     started = datetime.now(tz=timezone.utc)
     rc = run_once(phases=["phase_1"], embedder=HashEmbedder(),
@@ -472,10 +475,10 @@ def test_orchestrator_drains_all_articles_beyond_batch_limit(db_session, monkeyp
         def __init__(self):
             super().__init__(responses)
 
-    from src.config import get_settings
-    get_settings.cache_clear()
     monkeypatch.setenv("GROQ_API_KEY", "test")
     monkeypatch.setenv("LLM_MODEL", "test")
+    from .conftest import align_run_db_to_test_db
+    align_run_db_to_test_db(monkeypatch)
 
     started = datetime.now(tz=timezone.utc)
     rc = run_once(

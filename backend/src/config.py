@@ -54,6 +54,21 @@ class Settings(BaseSettings):
     groq_api_key: str = Field(..., description="Groq API key for enrich/compare calls.")
     llm_model: str = Field(..., description="Groq model string; recorded on analysis_runs rows.")
 
+    # Per-run cap on Groq calls for the two LLM stages. The orchestrator
+    # respects these budgets so a single --once cycle cannot make hundreds
+    # of Groq calls when a backlog exists. Remaining eligible articles /
+    # stories simply stay eligible for the next cycle.
+    llm_enrich_budget_per_run: int = Field(
+        default=20,
+        ge=0,
+        description="Max clustered articles enriched by Groq per --once cycle.",
+    )
+    llm_compare_budget_per_run: int = Field(
+        default=10,
+        ge=0,
+        description="Max stories compared by Groq per --once cycle.",
+    )
+
     # --- API --------------------------------------------------------------
     cors_origins: str = Field(
         default="http://localhost:5173",

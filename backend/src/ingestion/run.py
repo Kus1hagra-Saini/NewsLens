@@ -195,22 +195,42 @@ def run_once(
                         pass
 
                 # ------------------------------------------------------------
-                # STAGE 5: LLM enrichment — drain all clustered articles.
-                # Per-article failures already increment attempt_count in
-                # enrich.py and move to failed_analyze after 3 strikes.
-                # Any UNEXPECTED batch-level exception is caught so it
-                # doesn't crash the whole ingestion run.
+                # STAGE 5: LLM enrichment — bounded by
+                # settings.llm_enrich_budget_per_run. Per-article failures
+                # still increment attempt_count in enrich.py and move to
+                # failed_analyze after 3 strikes. A Groq 429 does NOT
+                # bump attempt_count (see enrich._record_llm_failure); it
+                # sets rate_limited=True and we break the drain for this
+                # cycle so we do not hammer the API. Any UNEXPECTED
+                # batch-level exception is caught so it doesn't crash the
+                # whole ingestion run.
                 # ------------------------------------------------------------
                 if (llm is not None
                         and not skip_enrich
                         and not skip_cluster
                         and not skip_embed):
+                    enrich_budget = settings.llm_enrich_budget_per_run
                     try:
-                        while True:
-                            analyzed, failed_e = enrich_articles(session, llm=llm)
-                            totals["analyzed"] += analyzed
-                            totals["failed"] += failed_e
-                            if analyzed == 0 and failed_e == 0:
+                        while enrich_budget > 0:
+                            take = min(20, enrich_budget)
+                            result = enrich_articles(
+                                session, llm=llm, batch_limit=take,
+                            )
+                            totals["analyzed"] += result.analyzed
+                            totals["failed"] += result.failed_permanent
+                            enrich_budget -= (result.analyzed
+                                              + result.failed_permanent)
+                            if result.rate_limited:
+                                log.warning(
+                                    "enrich: rate-limited by Groq; stopping "
+                                    "enrich drain for this cycle "
+                                    "(remaining budget=%d)",
+                                    enrich_budget,
+                                )
+                                break
+                            if (result.analyzed == 0
+                                    and result.failed_permanent == 0):
+                                # No eligible work left this cycle.
                                 break
                     except Exception as exc:
                         log.error("enrich: batch crashed, "
@@ -218,21 +238,26 @@ def run_once(
                                   exc, exc_info=True)
 
                 # ------------------------------------------------------------
-                # STAGE 6: story comparison — drain all eligible stories.
-                # compare_stories has no per-story attempt_count; failed
-                # comparisons leave articles in 'analyzed' for retry.
-                # A batch-level exception is caught so it doesn't crash
-                # the run.
+                # STAGE 6: story comparison — bounded by
+                # settings.llm_compare_budget_per_run. compare_stories has
+                # no per-story attempt_count; failed comparisons leave
+                # articles in 'analyzed' for retry. A batch-level exception
+                # is caught so it doesn't crash the run.
                 # ------------------------------------------------------------
                 if (llm is not None
                         and not skip_compare
                         and not skip_enrich
                         and not skip_cluster
                         and not skip_embed):
+                    compare_budget = settings.llm_compare_budget_per_run
                     try:
-                        while True:
-                            compared, _ = compare_stories(session, llm=llm)
+                        while compare_budget > 0:
+                            take = min(10, compare_budget)
+                            compared, _ = compare_stories(
+                                session, llm=llm, batch_limit=take,
+                            )
                             totals["compared"] += compared
+                            compare_budget -= compared
                             if compared == 0:
                                 break
                     except Exception as exc:
