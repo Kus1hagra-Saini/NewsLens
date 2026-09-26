@@ -4,7 +4,37 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NewsLens</title>
+    <meta name="theme-color" content="#0E0D0C" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#FAF7F2" media="(prefers-color-scheme: light)" />
+    <meta
+      name="description"
+      content="NewsLens — comparative news coverage and framing analysis across monitored outlets."
+    />
+    <title>NewsLens · Comparative coverage & framing</title>
+
+    <!--
+      Theme preflight — reads the user's explicit preference from
+      localStorage and applies it to <html> BEFORE React renders, so
+      the first paint uses the correct theme. Values:
+        "light" → force light
+        "dark"  → force dark
+        absent  → follow the OS via prefers-color-scheme
+      Wrapped in try/catch because localStorage can throw in private
+      windows or when site data is blocked; on error we simply fall
+      back to the OS preference.
+    -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("newslens.theme");
+          if (t === "light" || t === "dark") {
+            document.documentElement.setAttribute("data-theme", t);
+          }
+        } catch (_) {
+          /* ignore — auto behaviour applies */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

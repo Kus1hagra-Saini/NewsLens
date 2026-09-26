@@ -1,32 +1,40 @@
-import { Route, Routes, Link } from "react-router-dom";
-import Home from "./pages/Home";
-import StoryDetail from "./pages/StoryDetail";
-import OutletProfile from "./pages/OutletProfile";
-import Trends from "./pages/Trends";
-import Search from "./pages/Search";
-import Eval from "./pages/Eval";
+import { Route, Routes } from "react-router-dom";
 
-// Routes mirror architecture §11: / /story/:id /outlet/:slug /trends /search /eval.
-// Page bodies are placeholders during Week 1; they land in Weeks 3–4.
+import { PageContainer } from "@/components/layout/PageContainer";
+import About from "@/pages/About";
+import Home from "@/pages/Home";
+import NotFound from "@/pages/NotFound";
+import OutletProfile from "@/pages/OutletProfile";
+import OutletsIndex from "@/pages/OutletsIndex";
+import Search from "@/pages/Search";
+import StoriesList from "@/pages/StoriesList";
+import StoryDetail from "@/pages/StoryDetail";
+import Trending from "@/pages/Trending";
+
+/**
+ * Router — Phase 2 editorial shell.
+ *
+ * `/` now renders the real NewsLens editorial homepage (Hot Now →
+ * Just Updated → Discover) instead of the transitional Phase 1
+ * dashboard. Every other route is unchanged. The About / Outlets /
+ * Trending / Search / OutletProfile placeholders continue to render
+ * "in development" pages so the site stays end-to-end navigable while
+ * the corresponding phases are built out.
+ */
 export default function App() {
   return (
-    <div className="app">
-      <nav className="app-nav">
-        <Link to="/">NewsLens</Link>
-        <Link to="/trends">Trends</Link>
-        <Link to="/search">Search</Link>
-        <Link to="/eval">Eval</Link>
-      </nav>
-      <main className="app-main">
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/story/:id" element={<StoryDetail />} />
-          <Route path="/outlet/:slug" element={<OutletProfile />} />
-          <Route path="/trends" element={<Trends />} />
-          <Route path="/search" element={<Search />} />
-          <Route path="/eval" element={<Eval />} />
-        </Routes>
-      </main>
-    </div>
+    <PageContainer>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/stories" element={<StoriesList />} />
+        <Route path="/stories/:id" element={<StoryDetail />} />
+        <Route path="/trending" element={<Trending />} />
+        <Route path="/outlets" element={<OutletsIndex />} />
+        <Route path="/outlets/:slug" element={<OutletProfile />} />
+        <Route path="/search" element={<Search />} />
+        <Route path="/about" element={<About />} />
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </PageContainer>
   );
 }

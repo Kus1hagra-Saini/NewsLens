@@ -1,49 +1,212 @@
+/*
+ * NewsLens — editorial design tokens.
+ *
+ * Two typefaces:
+ *   - Fraunces, a variable serif with optical-size axis, for display
+ *     headlines. The single stylesheet below fetches only the axes we
+ *     actually use (opsz 9..144, wght 400..800).
+ *   - Inter, the same variable UI sans as before, for everything else.
+ *
+ * Palette:
+ *   - Warm off-white canvas (`stone-50`-ish) with deep near-black ink
+ *     in light mode; near-black canvas with warm off-white ink in dark.
+ *   - A single distinctive editorial accent — a saturated coral-red —
+ *     used for the brand mark, active nav state, and one or two other
+ *     focal moments. Not indigo, not neon.
+ *   - Three framing tones (critical / neutral / supportive) kept
+ *     semantically obvious but deliberately non-political and visually
+ *     distinct from the brand accent.
+ *
+ * All hues are RGB triples so Tailwind can apply <alpha-value> on top
+ * (rgb(var(--...)) / <alpha-value>).
+ */
+
+@import url("https://rsms.me/inter/inter.css");
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
-  --fg: #1a1a1a;
-  --bg: #ffffff;
-  --muted: #666666;
-  --accent: #2b5fdd;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  color: var(--fg);
-  background: var(--bg);
+  color-scheme: light;
+
+  /* Foundation — warm, editorial, not corporate-grey. */
+  --color-canvas:            250 247 242;   /* warm off-white paper */
+  --color-surface:           255 253 249;   /* barely-off white */
+  --color-surface-alt:       245 240 232;   /* newsprint tint */
+  --color-surface-inset:     239 233 222;   /* deeper newsprint */
+  --color-border-subtle:     226 218 205;
+  --color-border-strong:     198 187 168;
+  --color-hairline:           23  22  20;   /* editorial rule (used at low opacity) */
+
+  --color-ink-primary:        18  17  15;   /* near-black, slight warmth */
+  --color-ink-secondary:      66  62  56;
+  --color-ink-muted:         126 118 106;
+
+  /* Single editorial accent — a saturated coral-red. */
+  --color-accent:            220  62  50;   /* signature signal-red */
+  --color-accent-strong:     185  40  30;
+  --color-accent-soft:       253 231 226;   /* pale tint for backgrounds */
+  --color-accent-ink:        112  22  15;   /* deep accent text on soft tint */
+
+  /* Framing semantics — deliberately non-political, distinct from accent. */
+  --color-framing-critical:      194  65  12;   /* burnt orange */
+  --color-framing-critical-tint: 253 226 208;
+  --color-framing-neutral:       100  95  87;   /* warm slate */
+  --color-framing-neutral-tint:  232 226 214;
+  --color-framing-supportive:     15 118 110;   /* deep teal */
+  --color-framing-supportive-tint: 204 231 226;
 }
 
+/*
+ * Dark theme is applied in two ways:
+ *
+ *   1. Automatic (system preference) — the OS is set to dark and the
+ *      user has NOT chosen an explicit theme in-app. Gated on
+ *      ``:root:not([data-theme="light"])`` so an explicit light choice
+ *      still wins even when the OS is dark.
+ *
+ *   2. Explicit override — the user picked "Dark" from the in-app
+ *      toggle. The preflight script in index.html sets
+ *      ``data-theme="dark"`` on <html> before React renders, avoiding
+ *      a flash of the wrong theme. Persisted in localStorage under
+ *      ``newslens.theme``; values: "light" | "dark" | absent (auto).
+ */
+
 @media (prefers-color-scheme: dark) {
-  :root {
-    --fg: #f2f2f2;
-    --bg: #111114;
-    --muted: #a0a0a8;
-    --accent: #7ea1ff;
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --color-canvas:              14  13  12;   /* deep near-black, warmed */
+    --color-surface:             22  21  19;
+    --color-surface-alt:         30  28  25;
+    --color-surface-inset:       40  37  33;
+    --color-border-subtle:       50  46  40;
+    --color-border-strong:       78  72  64;
+    --color-hairline:           245 240 232;
+
+    --color-ink-primary:        246 240 230;
+    --color-ink-secondary:      184 176 162;
+    --color-ink-muted:          124 116 104;
+
+    --color-accent:             240  92  78;   /* coral, slightly lighter for AA */
+    --color-accent-strong:      252 129 110;
+    --color-accent-soft:         58  22  18;
+    --color-accent-ink:         252 200 190;
+
+    --color-framing-critical:      234 108  50;
+    --color-framing-critical-tint:  60  30  16;
+    --color-framing-neutral:       150 143 130;
+    --color-framing-neutral-tint:   45  42  37;
+    --color-framing-supportive:     52 178 168;
+    --color-framing-supportive-tint: 15  50  47;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-canvas:              14  13  12;
+  --color-surface:             22  21  19;
+  --color-surface-alt:         30  28  25;
+  --color-surface-inset:       40  37  33;
+  --color-border-subtle:       50  46  40;
+  --color-border-strong:       78  72  64;
+  --color-hairline:           245 240 232;
+
+  --color-ink-primary:        246 240 230;
+  --color-ink-secondary:      184 176 162;
+  --color-ink-muted:          124 116 104;
+
+  --color-accent:             240  92  78;
+  --color-accent-strong:      252 129 110;
+  --color-accent-soft:         58  22  18;
+  --color-accent-ink:         252 200 190;
+
+  --color-framing-critical:      234 108  50;
+  --color-framing-critical-tint:  60  30  16;
+  --color-framing-neutral:       150 143 130;
+  --color-framing-neutral-tint:   45  42  37;
+  --color-framing-supportive:     52 178 168;
+  --color-framing-supportive-tint: 15  50  47;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  /* The default :root block above already provides the light palette;
+     this selector exists so the preflight script can set an EXPLICIT
+     light preference that beats prefers-color-scheme: dark. */
 }
 
 * {
   box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
   margin: 0;
+  font-family: theme("fontFamily.sans");
+  font-feature-settings: "cv11", "ss01", "ss03";
+  background-color: rgb(var(--color-canvas));
+  color: rgb(var(--color-ink-primary));
+  min-height: 100vh;
+  overflow-x: hidden;
 }
 
-.app {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 1.25rem;
+/* Numeric emphasis on KPIs / axis labels / timestamps. */
+.tabular {
+  font-variant-numeric: tabular-nums slashed-zero;
 }
 
-.app-nav {
-  display: flex;
-  gap: 1rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid var(--muted);
-  margin-bottom: 1.25rem;
+/* Focus ring: uniform, subtle, accent-tinted. */
+:where(button, a, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(var(--color-canvas)),
+              0 0 0 4px rgb(var(--color-accent) / 0.55);
+  border-radius: 6px;
 }
 
-.app-nav a {
-  color: var(--fg);
-  text-decoration: none;
+/* Editorial rule — a full-width hairline used to separate sections
+   without wrapping them in cards. */
+.editorial-rule {
+  height: 1px;
+  background: rgb(var(--color-hairline) / 0.12);
+  border: 0;
 }
 
-.app-nav a:hover {
-  color: var(--accent);
+/* Recharts overrides — align tooltip/text with the design system. */
+.recharts-tooltip-wrapper {
+  outline: none !important;
+}
+.recharts-cartesian-axis-tick text,
+.recharts-legend-item-text {
+  font-family: theme("fontFamily.sans") !important;
+}
+
+/* Small reveal-from-below used across sections. Kept restrained. */
+@keyframes reveal-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.reveal-up  { animation: reveal-up 380ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+.reveal-d1  { animation-delay: 40ms; }
+.reveal-d2  { animation-delay: 100ms; }
+.reveal-d3  { animation-delay: 160ms; }
+.reveal-d4  { animation-delay: 220ms; }
+
+/* Reduce motion for users who prefer it. */
+@media (prefers-reduced-motion: reduce) {
+  .reveal-up { animation: none; }
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
