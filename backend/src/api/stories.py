@@ -11,10 +11,17 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
+from src.analysis.bias_distribution import (
+    OutletInStory,
+    OutletRatingRow,
+    compute_bias_distribution,
+)
 from src.api.deps import Pagination, Session
 from src.api.schemas import (
     ArticleAnalysisPayload,
     ArticleInStory,
+    BiasDistribution,
+    BiasDistributionSource,
     OutletSummary,
     PaginatedStories,
     StoryComparisonPayload,
@@ -25,6 +32,7 @@ from src.db.models import (
     Article,
     ArticleAnalysis,
     Outlet,
+    OutletBiasRating,
     Story,
     StoryComparison,
 )
@@ -112,8 +120,16 @@ async def get_story(story_id: int, session: Session) -> StoryDetail:
 
     articles: list[ArticleInStory] = []
     outlet_slugs: set[str] = set()
+    # Deduplicate outlets while preserving id/name/slug for the bias
+    # distribution — an outlet that published multiple articles must
+    # be counted once.
+    distinct_outlets: dict[int, OutletInStory] = {}
     for article, outlet, aa in art_rows:
         outlet_slugs.add(outlet.slug)
+        distinct_outlets.setdefault(
+            outlet.id,
+            OutletInStory(id=outlet.id, slug=outlet.slug, name=outlet.name),
+        )
         analysis_payload: ArticleAnalysisPayload | None = None
         if aa is not None:
             analysis_payload = ArticleAnalysisPayload(
@@ -159,6 +175,61 @@ async def get_story(story_id: int, session: Session) -> StoryDetail:
             generated_at=sc.generated_at,
         )
 
+    # ------------------------------------------------------------------
+    # Bias distribution — publication-level, NOT article-level.
+    # Read every rating row for the outlets covering this story in one
+    # query, hand it to the pure `compute_bias_distribution` helper, and
+    # serialise the result into the API schema.
+    # ------------------------------------------------------------------
+    bias_distribution_payload: BiasDistribution | None = None
+    if distinct_outlets:
+        rating_rows = (await session.execute(
+            select(OutletBiasRating, Outlet)
+            .join(Outlet, Outlet.id == OutletBiasRating.outlet_id)
+            .where(OutletBiasRating.outlet_id.in_(list(distinct_outlets.keys())))
+        )).all()
+
+        rating_records = [
+            OutletRatingRow(
+                outlet_id=r.outlet_id,
+                outlet_slug=o.slug,
+                outlet_name=o.name,
+                source=r.source,
+                original_label=r.original_label,
+                normalized_category=r.normalized_category,
+                rating_url=r.rating_url,
+                rated_at=r.rated_at,
+            )
+            for r, o in rating_rows
+        ]
+        dist = compute_bias_distribution(
+            outlets=distinct_outlets.values(),
+            ratings=rating_records,
+        )
+        bias_distribution_payload = BiasDistribution(
+            eligible=dist.eligible,
+            reason=dist.reason,
+            total_outlet_count=dist.total_outlet_count,
+            rated_outlet_count=dist.rated_outlet_count,
+            unrated_outlet_count=dist.unrated_outlet_count,
+            unrated_outlet_slugs=list(dist.unrated_outlet_slugs),
+            distribution={k: float(v) for k, v in dist.distribution.items()},
+            counts={k: int(v) for k, v in dist.counts.items()},
+            sources=[
+                BiasDistributionSource(
+                    outlet_id=s.outlet_id,
+                    outlet_slug=s.outlet_slug,
+                    outlet_name=s.outlet_name,
+                    original_rating=s.original_rating,
+                    normalized_category=s.normalized_category,
+                    rating_source=s.rating_source,
+                    rating_url=s.rating_url,
+                    rated_at=s.rated_at,
+                )
+                for s in dist.sources
+            ],
+        )
+
     return StoryDetail(
         id=story.id,
         title=story.title,
@@ -172,4 +243,5 @@ async def get_story(story_id: int, session: Session) -> StoryDetail:
                         if comparison_payload else None),
         articles=articles,
         comparison=comparison_payload,
+        bias_distribution=bias_distribution_payload,
     )

@@ -26,6 +26,7 @@ from src.db.models import (
     ArticleAnalysis,
     IngestionRun,
     Outlet,
+    OutletBiasRating,
     Story,
     StoryComparison,
 )
@@ -473,6 +474,162 @@ def test_trends_rejects_bad_window(api_client):
     assert r.status_code == 422
     r = api_client.get("/trends?window=1000")
     assert r.status_code == 422
+
+
+# =============================================================================
+# Framing semantics guard — the API must NEVER expose a political
+# left/right label. This is a smoke test that scans a story-detail
+# payload for forbidden vocabulary.
+# =============================================================================
+# =============================================================================
+# Bias distribution — publication-level, story-detail API shape
+#
+# These tests verify the API shape end-to-end, in addition to the pure
+# unit tests in test_bias_distribution.py. They exercise the story
+# detail endpoint with rated outlets attached so the response's
+# `bias_distribution` field is populated.
+# =============================================================================
+@pytest.fixture()
+def api_bias_dataset(db_session):
+    """A story with 3 outlets, all rated. Exercises the eligible branch
+    of the bias distribution and the multi-article-per-outlet rule."""
+    now = datetime.now(tz=timezone.utc)
+
+    outlets = [
+        Outlet(name=f"_test bias outlet {i}",
+               slug=f"_test_bias_o_{i}",
+               rss_url=f"https://x.example/_test_bias_o_{i}",
+               website="https://x.example", active=True)
+        for i in range(3)
+    ]
+    db_session.add_all(outlets)
+    db_session.flush()
+
+    # 3 rated outlets: 1 left, 1 center, 1 right (matching MBFC labels).
+    ratings = [
+        OutletBiasRating(
+            outlet_id=outlets[0].id, source="MBFC",
+            original_label="Left-Center", normalized_category="left",
+            rating_url="https://mediabiasfactcheck.com/_test/",
+            rated_at=now - timedelta(days=30),
+        ),
+        OutletBiasRating(
+            outlet_id=outlets[1].id, source="MBFC",
+            original_label="Least Biased", normalized_category="center",
+            rating_url="https://mediabiasfactcheck.com/_test/",
+            rated_at=now - timedelta(days=30),
+        ),
+        OutletBiasRating(
+            outlet_id=outlets[2].id, source="MBFC",
+            original_label="Right-Center", normalized_category="right",
+            rating_url="https://mediabiasfactcheck.com/_test/",
+            rated_at=now - timedelta(days=30),
+        ),
+    ]
+    db_session.add_all(ratings)
+    db_session.flush()
+
+    story = Story(title="_dbg_ api bias story",
+                  topic="_dbg_bias",
+                  first_seen_at=now - timedelta(hours=6),
+                  last_seen_at=now,
+                  article_count=4,
+                  summary="Three outlets, one publishing twice.")
+    db_session.add(story)
+    db_session.flush()
+
+    # Outlet 0 publishes TWICE; the distribution must still count it once.
+    articles = [
+        Article(outlet_id=outlets[0].id,
+                url="_test_bias_url_0a",
+                headline="_test bias 0a headline",
+                author="a", published_at=now - timedelta(hours=5),
+                full_text="content 0a" * 10,
+                processing_state="complete", story_id=story.id),
+        Article(outlet_id=outlets[0].id,
+                url="_test_bias_url_0b",
+                headline="_test bias 0b headline",
+                author="a", published_at=now - timedelta(hours=4),
+                full_text="content 0b" * 10,
+                processing_state="complete", story_id=story.id),
+        Article(outlet_id=outlets[1].id,
+                url="_test_bias_url_1",
+                headline="_test bias 1 headline",
+                author="b", published_at=now - timedelta(hours=3),
+                full_text="content 1" * 10,
+                processing_state="complete", story_id=story.id),
+        Article(outlet_id=outlets[2].id,
+                url="_test_bias_url_2",
+                headline="_test bias 2 headline",
+                author="c", published_at=now - timedelta(hours=2),
+                full_text="content 2" * 10,
+                processing_state="complete", story_id=story.id),
+    ]
+    db_session.add_all(articles)
+    db_session.commit()
+
+    yield {"story": story, "outlets": outlets, "ratings": ratings}
+
+    # Explicit cleanup for the extra fixture data. The db_session
+    # teardown handles slugs matching _test_%, which covers our outlets;
+    # but ratings and stories with our _dbg_ prefix need the trailing
+    # cleanup query too. The conftest teardown handles those.
+
+
+def test_story_detail_includes_bias_distribution_shape(api_client, api_bias_dataset):
+    """The response's bias_distribution field carries the documented
+    shape: eligible, counts, distribution, sources[]."""
+    sid = api_bias_dataset["story"].id
+    r = api_client.get(f"/stories/{sid}")
+    assert r.status_code == 200
+    bd = r.json().get("bias_distribution")
+    assert bd is not None, "story_detail must include bias_distribution"
+
+    assert set(bd.keys()) >= {
+        "eligible", "total_outlet_count", "rated_outlet_count",
+        "unrated_outlet_count", "unrated_outlet_slugs",
+        "distribution", "counts", "sources",
+    }
+    assert bd["eligible"] is True
+    # 3 outlets total, all rated — the two articles from outlet 0 must
+    # NOT inflate any count.
+    assert bd["total_outlet_count"] == 3
+    assert bd["rated_outlet_count"] == 3
+    assert bd["unrated_outlet_count"] == 0
+    assert bd["counts"] == {"left": 1, "center": 1, "right": 1}
+
+    # Percentages sum to ~100 (subject to rounding).
+    total = sum(bd["distribution"].values())
+    assert 99.5 <= total <= 100.5
+
+    # Sources list carries the raw external label and URL — never fake data.
+    assert len(bd["sources"]) == 3
+    for s in bd["sources"]:
+        assert set(s.keys()) >= {
+            "outlet_id", "outlet_slug", "outlet_name",
+            "original_rating", "normalized_category",
+            "rating_source", "rating_url", "rated_at",
+        }
+        assert s["normalized_category"] in ("left", "center", "right")
+        assert s["rating_source"] == "MBFC"
+        assert s["rating_url"].startswith("http")
+
+
+def test_story_detail_bias_distribution_ineligible_when_no_ratings(
+    api_client, api_dataset,
+):
+    """The existing api_dataset fixture has 2 outlets, no bias ratings —
+    so the bar must be ineligible with reason='too_few_outlets'
+    (the 3-outlet threshold trips first)."""
+    sid = api_dataset["story"].id
+    r = api_client.get(f"/stories/{sid}")
+    assert r.status_code == 200
+    bd = r.json().get("bias_distribution")
+    assert bd is not None
+    assert bd["eligible"] is False
+    # Should be one of the two documented reasons.
+    assert bd["reason"] in ("too_few_outlets", "too_few_rated_outlets")
+    assert bd["sources"] == []
 
 
 # =============================================================================

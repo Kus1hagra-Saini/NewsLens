@@ -84,6 +84,59 @@ class Outlet(Base):
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+# --- 1b. outlet_bias_ratings ---------------------------------------------
+# One row per (outlet, source). Stores publication-level bias ratings from
+# documented third-party organisations (MBFC, Ad Fontes, etc.). NewsLens
+# NEVER generates these ratings itself — every row must trace back to a
+# named external source with a URL for verification.
+#
+# `normalized_category` is a deterministic mapping from `original_label`
+# to one of ('left', 'center', 'right'), computed at seed time by
+# `bias_ratings.normalize_label()`. The original label is preserved
+# unchanged so a reader can see the raw source claim, and so future code
+# can re-derive a different normalisation without losing information.
+BIAS_CATEGORY_VALUES = ("left", "center", "right")
+
+bias_category_enum = ENUM(
+    *BIAS_CATEGORY_VALUES,
+    name="bias_category",
+    create_type=False,
+)
+
+
+class OutletBiasRating(Base):
+    __tablename__ = "outlet_bias_ratings"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    outlet_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("outlets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    original_label: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_category: Mapped[str] = mapped_column(
+        bias_category_enum,
+        nullable=False,
+    )
+    rating_url: Mapped[str] = mapped_column(Text, nullable=False)
+    rated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        # One row per (outlet, source): a source can only rate an outlet
+        # once. To record an updated rating, replace the row in place.
+        Index(
+            "ux_outlet_bias_ratings_outlet_source",
+            "outlet_id",
+            "source",
+            unique=True,
+        ),
+    )
+
+
 # --- 2. stories -----------------------------------------------------------
 class Story(Base):
     __tablename__ = "stories"

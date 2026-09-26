@@ -117,9 +117,50 @@ class StoryComparisonPayload(BaseModel):
     generated_at:      datetime
 
 
+# ---------------------------------------------------------------------------
+# Bias distribution — publication-level, NOT article-level
+# ---------------------------------------------------------------------------
+class BiasDistributionSource(BaseModel):
+    """One rated outlet's contribution to the story's bias distribution.
+
+    ``original_rating`` is preserved verbatim from the external source so
+    the frontend can display the raw claim; ``normalized_category`` is
+    the deterministic mapping the visualisation buckets on.
+    """
+    outlet_id:            int
+    outlet_slug:          str
+    outlet_name:          str
+    original_rating:      str
+    normalized_category:  str          # 'left' | 'center' | 'right'
+    rating_source:        str          # e.g. "MBFC"
+    rating_url:           str
+    rated_at:             datetime | None
+
+
+class BiasDistribution(BaseModel):
+    """Story-level distribution derived from publication-level ratings.
+
+    NEVER an assessment of the political bias of the story or of any
+    individual article. Describes only the population of rated outlets
+    covering the story.
+    """
+    eligible:             bool
+    # Present only when eligible=False. Frontend uses it to explain why
+    # no bar is shown.
+    reason:               str | None = None
+    total_outlet_count:   int
+    rated_outlet_count:   int
+    unrated_outlet_count: int
+    unrated_outlet_slugs: list[str] = Field(default_factory=list)
+    distribution:         dict[str, float]      # {'left': %, 'center': %, 'right': %}
+    counts:               dict[str, int]        # {'left': n, 'center': n, 'right': n}
+    sources:              list[BiasDistributionSource] = Field(default_factory=list)
+
+
 class StoryDetail(StorySummary):
     articles:           list[ArticleInStory]
     comparison:         StoryComparisonPayload | None
+    bias_distribution:  BiasDistribution | None = None
     framing_disclaimer: str = FRAMING_DISCLAIMER
 
 
