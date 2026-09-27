@@ -44,7 +44,12 @@ def test_health(client: TestClient) -> None:
 def test_models_import() -> None:
     """Guard against a future models.py regression that would prevent
     alembic env.py from loading Base.metadata for autogenerate compare.
-    Also asserts we have exactly the 9 tables from architecture §9."""
+
+    The initial 9 tables from architecture §9 plus tables added by
+    subsequent Alembic migrations:
+      * ``outlet_bias_ratings`` — migration 0002 (publication-level
+        bias ratings from third-party sources).
+    """
     from src.db.models import Base
 
     expected = {
@@ -57,6 +62,8 @@ def test_models_import() -> None:
         "story_overrides",
         "ingestion_runs",
         "eval_labels",
+        # --- migration 0002 -------------------------------------------
+        "outlet_bias_ratings",
     }
     assert set(Base.metadata.tables.keys()) == expected
 

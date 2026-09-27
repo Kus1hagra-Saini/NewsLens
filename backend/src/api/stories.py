@@ -16,6 +16,11 @@ from src.analysis.bias_distribution import (
     OutletRatingRow,
     compute_bias_distribution,
 )
+from src.analysis.story_images import (
+    ArticleImageCandidate,
+    hero_image_from_selection,
+    select_story_images,
+)
 from src.api.deps import Pagination, Session
 from src.api.schemas import (
     ArticleAnalysisPayload,
@@ -26,6 +31,7 @@ from src.api.schemas import (
     PaginatedStories,
     StoryComparisonPayload,
     StoryDetail,
+    StoryImage,
     StorySummary,
 )
 from src.db.models import (
@@ -72,9 +78,39 @@ async def list_stories(session: Session, pg: Pagination) -> PaginatedStories:
     for sid, slug in outlet_rows:
         outlets_by_story.setdefault(sid, []).append(slug)
 
+    # Per-story image candidates for hero_image_url. One row per
+    # (story, article) that has a non-null image_url. The pure
+    # selector below handles dedupe + outlet diversity + count-rule.
+    img_rows = (await session.execute(
+        select(
+            Article.story_id, Article.id, Article.image_url,
+            Article.published_at, Outlet.slug, Outlet.name,
+        )
+        .join(Outlet, Outlet.id == Article.outlet_id)
+        .where(Article.story_id.in_(story_ids))
+        .where(Article.image_url.is_not(None))
+    )).all()
+    candidates_by_story: dict[int, list[ArticleImageCandidate]] = {}
+    for sid, aid, iurl, pub, oslug, oname in img_rows:
+        candidates_by_story.setdefault(sid, []).append(
+            ArticleImageCandidate(
+                article_id=aid,
+                outlet_slug=oslug,
+                outlet_name=oname,
+                image_url=iurl,
+                published_at_ts=pub.timestamp() if pub else 0.0,
+            )
+        )
+
     items: list[StorySummary] = []
     for r in rows:
         s: Story = r.Story
+        # Only need the hero for the list view — the detail endpoint
+        # returns the full selected image list.
+        picked = select_story_images(
+            candidates=candidates_by_story.get(s.id, []),
+            total_article_count=s.article_count or 0,
+        )
         items.append(StorySummary(
             id=s.id,
             title=s.title,
@@ -86,6 +122,7 @@ async def list_stories(session: Session, pg: Pagination) -> PaginatedStories:
             outlet_slugs=sorted(outlets_by_story.get(s.id, [])),
             framing_spread=(float(r.framing_spread)
                             if r.framing_spread is not None else None),
+            hero_image_url=hero_image_from_selection(picked),
         ))
 
     return PaginatedStories(
@@ -157,6 +194,7 @@ async def get_story(story_id: int, session: Session) -> StoryDetail:
             author=article.author,
             published_at=article.published_at,
             processing_state=article.processing_state,
+            image_url=article.image_url,
             analysis=analysis_payload,
         ))
 
@@ -230,6 +268,36 @@ async def get_story(story_id: int, session: Session) -> StoryDetail:
             ],
         )
 
+    # ------------------------------------------------------------------
+    # Story-level image selection — hero + up to N supporting images
+    # per the deterministic count rule (see analysis.story_images).
+    # ------------------------------------------------------------------
+    img_candidates = [
+        ArticleImageCandidate(
+            article_id=a.id,
+            outlet_slug=a.outlet.slug,
+            outlet_name=a.outlet.name,
+            image_url=a.image_url,
+            published_at_ts=a.published_at.timestamp() if a.published_at else 0.0,
+        )
+        for a in articles
+        if a.image_url
+    ]
+    picked_images = select_story_images(
+        candidates=img_candidates,
+        total_article_count=story.article_count or len(articles),
+    )
+    story_images_payload = [
+        StoryImage(
+            url=p.url,
+            article_id=p.article_id,
+            outlet_slug=p.outlet_slug,
+            outlet_name=p.outlet_name,
+        )
+        for p in picked_images
+    ]
+    hero_url = hero_image_from_selection(picked_images)
+
     return StoryDetail(
         id=story.id,
         title=story.title,
@@ -241,7 +309,9 @@ async def get_story(story_id: int, session: Session) -> StoryDetail:
         outlet_slugs=sorted(outlet_slugs),
         framing_spread=(comparison_payload.framing_spread
                         if comparison_payload else None),
+        hero_image_url=hero_url,
         articles=articles,
         comparison=comparison_payload,
         bias_distribution=bias_distribution_payload,
+        story_images=story_images_payload,
     )

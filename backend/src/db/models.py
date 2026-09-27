@@ -189,6 +189,11 @@ class Article(Base):
     headline: Mapped[str] = mapped_column(Text, nullable=False)
     author: Mapped[str | None] = mapped_column(Text)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Publication-supplied image URL. NewsLens never downloads or
+    # rehosts images; the frontend loads directly from the outlet.
+    # NULL when the article carries no usable image; UI hides the
+    # slot rather than showing a placeholder.
+    image_url: Mapped[str | None] = mapped_column(Text)
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -69,9 +69,28 @@ export function Discover({
           />
         ) : (
           <div className="grid grid-cols-1 gap-x-8 gap-y-8 md:grid-cols-2 lg:grid-cols-3">
-            {stories.map((s) => (
-              <StoryCard key={s.id} story={s} size="md" />
-            ))}
+            {(() => {
+              // Show an image on at most the first TWO Discover cards
+              // that have a hero image. Combined with the featured
+              // hero + one HotNow secondary, this keeps the Home page
+              // at ~3-4 prominent images total. Cards without images
+              // (or beyond the cap) fall back to the text-first look
+              // that already anchors the section.
+              const IMAGE_CAP = 2;
+              let imagesGiven = 0;
+              return stories.map((s) => {
+                const canShow = imagesGiven < IMAGE_CAP && !!s.hero_image_url;
+                if (canShow) imagesGiven += 1;
+                return (
+                  <StoryCard
+                    key={s.id}
+                    story={s}
+                    size="md"
+                    showImage={canShow}
+                  />
+                );
+              });
+            })()}
           </div>
         )}
       </div>

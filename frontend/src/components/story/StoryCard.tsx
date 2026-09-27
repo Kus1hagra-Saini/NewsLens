@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 
 import { CompactBiasBar } from "@/components/story-detail/CompactBiasBar";
+import { ImageFrame } from "@/components/story-detail/ImageFrame";
 import type { StorySummary } from "@/api/types";
 import { cn } from "@/lib/cn";
 import { StoryMeta } from "./StoryMeta";
@@ -18,11 +19,19 @@ export function StoryCard({
   size = "md",
   className,
   showTopic = true,
+  showImage = false,
 }: {
   story: StorySummary;
   size?: "sm" | "md" | "lg";
   className?: string;
   showTopic?: boolean;
+  /**
+   * When true AND ``story.hero_image_url`` is not null, an image
+   * frame renders above the headline. The parent decides which
+   * cards get an image so Home doesn't reduce to a grid of pictures
+   * — see ``HotNow`` and ``Discover`` for placement policy.
+   */
+  showImage?: boolean;
 }) {
   const headlineCls =
     size === "lg"
@@ -46,6 +55,18 @@ export function StoryCard({
           "transition-colors duration-150 ease-editorial",
         )}
       >
+        {/* Optional image slot — rendered only when the parent
+            explicitly opted this card in (showImage) AND the story
+            has a server-picked hero. Lazy-loaded via ImageFrame. */}
+        {showImage && story.hero_image_url ? (
+          <ImageFrame
+            url={story.hero_image_url}
+            alt={`Photo from a story on ${story.title.slice(0, 60)}`}
+            aspect="wide"
+            className="mb-3"
+          />
+        ) : null}
+
         <h3
           className={cn(
             "font-display tracking-[-0.01em] text-ink-primary",

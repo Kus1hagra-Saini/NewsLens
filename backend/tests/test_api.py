@@ -118,6 +118,7 @@ def api_dataset(db_session):
         full_text=("The union budget introduced tax reforms today. " * 12),
         processing_state="complete",
         story_id=story.id,
+        image_url="https://cdn.example/_test_api_a_hero.jpg",
     )
     art_b = Article(
         outlet_id=outlet_b.id,
@@ -128,6 +129,8 @@ def api_dataset(db_session):
         full_text=("Opposition critiqued the budget's tax reforms. " * 12),
         processing_state="complete",
         story_id=story.id,
+        # Intentionally NULL — exercises the mixed-image path.
+        image_url=None,
     )
     db_session.add_all([art_a, art_b])
     db_session.flush()
@@ -630,6 +633,57 @@ def test_story_detail_bias_distribution_ineligible_when_no_ratings(
     # Should be one of the two documented reasons.
     assert bd["reason"] in ("too_few_outlets", "too_few_rated_outlets")
     assert bd["sources"] == []
+
+
+# =============================================================================
+# Article Image System — API shape
+# =============================================================================
+def test_story_detail_exposes_article_image_url(api_client, api_dataset):
+    """Each article carries an image_url (nullable) in the payload."""
+    sid = api_dataset["story"].id
+    r = api_client.get(f"/stories/{sid}")
+    assert r.status_code == 200
+    arts = r.json()["articles"]
+    assert len(arts) == 2
+    for a in arts:
+        assert "image_url" in a
+    # One had an image, one didn't — verify both branches survive.
+    urls = sorted([a["image_url"] for a in arts], key=lambda x: (x is None, x))
+    assert urls[0] == "https://cdn.example/_test_api_a_hero.jpg"
+    assert urls[1] is None
+
+
+def test_story_detail_hero_and_story_images_from_selection(
+    api_client, api_dataset,
+):
+    """hero_image_url + story_images come from the deterministic
+    server-side selector. With 2 articles and 1 usable image, the
+    count-rule allows up to 1 → the hero is the one available image
+    and story_images is a single element carrying full provenance."""
+    sid = api_dataset["story"].id
+    r = api_client.get(f"/stories/{sid}")
+    j = r.json()
+    assert j["hero_image_url"] == "https://cdn.example/_test_api_a_hero.jpg"
+
+    imgs = j["story_images"]
+    assert isinstance(imgs, list)
+    assert len(imgs) == 1
+    only = imgs[0]
+    assert set(only.keys()) >= {
+        "url", "article_id", "outlet_slug", "outlet_name",
+    }
+    assert only["url"] == "https://cdn.example/_test_api_a_hero.jpg"
+    assert only["outlet_slug"] == api_dataset["outlet_a"].slug
+
+
+def test_stories_list_includes_hero_image_url(api_client, api_dataset):
+    """The paginated list payload also carries hero_image_url."""
+    r = api_client.get("/stories?page=1&limit=25")
+    j = r.json()
+    ours = [it for it in j["items"] if it["id"] == api_dataset["story"].id]
+    assert ours, "test story missing from first page"
+    # It should have been populated from art_a's image_url.
+    assert ours[0]["hero_image_url"] == "https://cdn.example/_test_api_a_hero.jpg"
 
 
 # =============================================================================

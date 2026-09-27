@@ -34,6 +34,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from src.db.models import Article, Outlet
+from src.ingestion.image_extraction import (
+    image_url_from_feed_entry,
+    image_url_from_html,
+)
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +102,11 @@ class DiscoveredEntry:
     headline: str
     author: str | None
     published_at: datetime
+    # Best-effort image URL harvested from the RSS entry itself
+    # (media:content / media:thumbnail / enclosure / inline <img>).
+    # None when the feed carries no usable image; the HTML-extraction
+    # stage will attempt og:image / twitter:image as a fallback.
+    image_url: str | None = None
 
 
 def parse_feed(feed_bytes: bytes | str) -> list[DiscoveredEntry]:
@@ -133,12 +142,24 @@ def parse_feed(feed_bytes: bytes | str) -> list[DiscoveredEntry]:
             continue
 
         author = (entry.get("author") or "").strip() or None
+
+        # Image URL from the feed entry — wrapped in try/except because
+        # a failure here must never break RSS discovery. The feed URL
+        # is a reasonable base for absolutising a rare root-relative
+        # image reference.
+        img_url: str | None = None
+        try:
+            img_url = image_url_from_feed_entry(entry, base_url=url)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("image extraction from feed entry failed: %s", exc)
+
         out.append(
             DiscoveredEntry(
                 url=url,
                 headline=headline[:1000],
                 author=author,
                 published_at=published_at,
+                image_url=img_url,
             )
         )
     return out
@@ -182,6 +203,10 @@ def discover_articles(
                 author=entry.author,
                 published_at=entry.published_at,
                 processing_state="discovered",
+                # image_url may be None when the feed carried no
+                # usable image; the extract stage will retry via
+                # og:image / twitter:image on the article HTML.
+                image_url=entry.image_url,
             )
             .on_conflict_do_nothing(index_elements=["url"])
             .returning(Article.id)
@@ -339,16 +364,39 @@ def extract_articles(
                 session.commit()
                 continue
 
+            # Best-effort image extraction from HTML meta tags. Only
+            # runs when the article doesn't already have an image
+            # (usually from the RSS entry). Any failure is swallowed
+            # — image is a nice-to-have, never a reason to fail
+            # extraction. The updated image_url is written in the
+            # same UPDATE below so we don't hit the row twice.
+            new_image_url = article.image_url
+            if not new_image_url:
+                try:
+                    new_image_url = image_url_from_html(
+                        resp.text, base_url=article.url,
+                    )
+                except Exception as exc:
+                    log.debug(
+                        "image extraction from HTML failed for %s: %s",
+                        article.url, exc,
+                    )
+                    new_image_url = None
+
+            update_values: dict = {
+                "full_text": text,
+                "processing_state": "extracted",
+                "state_updated_at": datetime.now(tz=timezone.utc),
+                "state_error": None,
+                "attempt_count": 0,  # reset on success (per stage)
+            }
+            if new_image_url and new_image_url != article.image_url:
+                update_values["image_url"] = new_image_url
+
             session.execute(
                 update(Article)
                 .where(Article.id == article.id)
-                .values(
-                    full_text=text,
-                    processing_state="extracted",
-                    state_updated_at=datetime.now(tz=timezone.utc),
-                    state_error=None,
-                    attempt_count=0,  # reset on success (per stage)
-                )
+                .values(**update_values)
             )
             extracted += 1
             session.commit()

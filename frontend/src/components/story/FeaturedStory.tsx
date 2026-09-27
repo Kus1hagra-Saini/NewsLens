@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 
 import { CompactBiasBar } from "@/components/story-detail/CompactBiasBar";
+import { ImageFrame } from "@/components/story-detail/ImageFrame";
 import { IconArrowUpRight } from "@/components/ui/Icon";
 import type { StorySummary } from "@/api/types";
 import { cn } from "@/lib/cn";
@@ -30,6 +31,21 @@ export function FeaturedStory({
         to={`/stories/${story.id}`}
         className="block outline-none focus-visible:ring-0"
       >
+        {/* Optional lead image — only rendered when the story has a
+            server-picked hero image. Loads eagerly (priority=true)
+            since it's above the fold. Graceful fallback: if the URL
+            fails, ImageFrame renders nothing and the headline still
+            anchors the front page. */}
+        {story.hero_image_url ? (
+          <ImageFrame
+            url={story.hero_image_url}
+            alt={`Photo from a story on ${story.title.slice(0, 60)}`}
+            aspect="wide"
+            priority
+            className="mb-6"
+          />
+        ) : null}
+
         {/* Kicker line — behaves like a section eyebrow on the front page. */}
         <div className="mb-4 flex items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.2em] text-accent">
           <span className="inline-block h-[6px] w-[6px] rounded-full bg-accent" />

@@ -88,7 +88,10 @@ function HotNowGrid({ stories }: { stories: StorySummary[] }) {
           {featured ? <FeaturedStory story={featured} /> : null}
         </div>
 
-        {/* Secondary — 5 of 12, stacked with hairline dividers */}
+        {/* Secondary — 5 of 12, stacked with hairline dividers.
+            Only the FIRST secondary story with a hero image renders
+            with an image; the rest stay text-first so the section
+            doesn't reduce to a stack of pictures. */}
         {secondary.length > 0 ? (
           <div className="lg:col-span-5">
             <div className="mb-4 flex items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.2em] text-ink-muted">
@@ -96,9 +99,21 @@ function HotNowGrid({ stories }: { stories: StorySummary[] }) {
               Also broadly covered
             </div>
             <div className="flex flex-col gap-y-6">
-              {secondary.map((s) => (
-                <StoryCard key={s.id} story={s} size="md" />
-              ))}
+              {(() => {
+                let imageGiven = false;
+                return secondary.map((s) => {
+                  const canShow = !imageGiven && !!s.hero_image_url;
+                  if (canShow) imageGiven = true;
+                  return (
+                    <StoryCard
+                      key={s.id}
+                      story={s}
+                      size="md"
+                      showImage={canShow}
+                    />
+                  );
+                });
+              })()}
             </div>
           </div>
         ) : null}

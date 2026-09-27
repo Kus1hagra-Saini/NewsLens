@@ -74,6 +74,13 @@ export interface StorySummary {
   summary: string | null;
   outlet_slugs: string[];
   framing_spread: number | null;
+  /**
+   * Server-picked hero image URL — derived by the deterministic
+   * per-story selector from every article's ``image_url``. ``null``
+   * when no article on the story carries a usable image. Home cards
+   * fall back to the text-first treatment when this is null.
+   */
+  hero_image_url: string | null;
 }
 
 export interface PaginatedStories {
@@ -171,6 +178,13 @@ export interface ArticleInStory {
   author: string | null;
   published_at: string;
   processing_state: string;
+  /**
+   * Publication-supplied image URL, or ``null`` when the article
+   * carries no usable image. Loaded directly from the outlet — the
+   * backend never rehosts. UI code hides the slot when null instead
+   * of rendering a placeholder.
+   */
+  image_url: string | null;
   analysis: ArticleAnalysisPayload | null;
 }
 
@@ -232,9 +246,28 @@ export interface BiasDistribution {
   sources: BiasDistributionSource[];
 }
 
+/**
+ * One image selected for a story page. The API already applies the
+ * deterministic count rule (2–6 → 1, 7–10 → 2, 11+ → 3), outlet-
+ * diversity, and de-duplication server-side; the frontend renders
+ * this list verbatim.
+ */
+export interface StoryImage {
+  url: string;
+  article_id: number;
+  outlet_slug: string;
+  outlet_name: string;
+}
+
 export interface StoryDetail extends StorySummary {
   articles: ArticleInStory[];
   comparison: StoryComparisonPayload | null;
   bias_distribution: BiasDistribution | null;
+  /**
+   * Server-picked list of images to display on the story page. The
+   * first element is the hero (== ``hero_image_url``). Empty when
+   * the story has too few articles or no usable images.
+   */
+  story_images: StoryImage[];
   framing_disclaimer: string;
 }

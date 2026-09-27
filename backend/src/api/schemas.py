@@ -82,6 +82,10 @@ class ArticleInStory(BaseModel):
     author:            str | None
     published_at:      datetime
     processing_state:  str
+    # Publication-supplied image URL, or None when the article carries
+    # no usable image. Loaded directly from the outlet; NewsLens never
+    # rehosts.
+    image_url:         str | None = None
     analysis:          ArticleAnalysisPayload | None
 
 
@@ -98,15 +102,21 @@ class ArticleDetail(ArticleInStory):
 # Stories
 # ---------------------------------------------------------------------------
 class StorySummary(BaseModel):
-    id:              int
-    title:           str
-    topic:           str | None
-    first_seen_at:   datetime
-    last_seen_at:    datetime
-    article_count:   int
-    summary:         str | None
-    outlet_slugs:    list[str]
-    framing_spread:  float | None
+    id:               int
+    title:            str
+    topic:            str | None
+    first_seen_at:    datetime
+    last_seen_at:     datetime
+    article_count:    int
+    summary:          str | None
+    outlet_slugs:     list[str]
+    framing_spread:   float | None
+    # First-choice image for this story — computed server-side via the
+    # deterministic selection service (see ``analysis.story_images``).
+    # NULL when no article in the story carries a usable image, in
+    # which case UI code hides the slot rather than showing a
+    # placeholder.
+    hero_image_url:   str | None = None
 
 
 class StoryComparisonPayload(BaseModel):
@@ -157,10 +167,27 @@ class BiasDistribution(BaseModel):
     sources:              list[BiasDistributionSource] = Field(default_factory=list)
 
 
+class StoryImage(BaseModel):
+    """One image selected for display on a story page.
+
+    The list of ``StoryImage`` on ``StoryDetail`` is already capped
+    server-side by the count-rule + de-dup service; the frontend
+    renders it as-is (no additional filtering).
+    """
+    url:          str
+    article_id:   int
+    outlet_slug:  str
+    outlet_name:  str
+
+
 class StoryDetail(StorySummary):
     articles:           list[ArticleInStory]
     comparison:         StoryComparisonPayload | None
     bias_distribution:  BiasDistribution | None = None
+    # Deterministic per-story image selection. First entry is the hero
+    # (== hero_image_url on StorySummary). Empty list when the story
+    # has too few articles or no usable images.
+    story_images:       list[StoryImage] = Field(default_factory=list)
     framing_disclaimer: str = FRAMING_DISCLAIMER
 
 
