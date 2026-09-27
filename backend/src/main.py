@@ -35,7 +35,15 @@ def create_app() -> FastAPI:
     # session module imported at app startup (they still do end up
     # importing it via the routers below, but the import graph stays
     # explicit and grep-able).
-    from src.api import articles, outlets, overview, search, stories, trends
+    from src.api import (
+        articles,
+        outlets,
+        overview,
+        positive_stories,
+        search,
+        stories,
+        trends,
+    )
 
     app.include_router(overview.router)
     app.include_router(stories.router)
@@ -43,6 +51,7 @@ def create_app() -> FastAPI:
     app.include_router(outlets.router)
     app.include_router(search.router)
     app.include_router(trends.router)
+    app.include_router(positive_stories.router)
 
     return app
 

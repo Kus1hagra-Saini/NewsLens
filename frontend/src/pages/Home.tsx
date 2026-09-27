@@ -28,9 +28,10 @@ import type { StorySummary } from "@/api/types";
  *     so the homepage doesn't feel repetitive; the parent picks Hot
  *     Now first, then fills Just Updated / Discover from what remains.
  *
- * Trending is intentionally NOT rendered here — it belongs to Phase 5
- * per the Editorial Redesign Decisions doc, and we do not render a
- * placeholder section for something that isn't ready.
+ * Positive Stories has its own dedicated page (``/positive``) and is
+ * intentionally NOT surfaced as a Home section: Home already carries
+ * three ranked feeds and a fourth would crowd the hierarchy. A reader
+ * discovers Positive Stories via the top nav.
  */
 const HOT_NOW_COUNT = 8;     // 1 hero + 3 secondary + up to 4 tail rows
 const JUST_UPDATED_COUNT = 6;

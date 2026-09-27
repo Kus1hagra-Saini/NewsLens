@@ -18,7 +18,7 @@ export interface NavEntry {
 export const PRIMARY_NAV: NavEntry[] = [
   { to: "/",         label: "Home",     end: true },
   { to: "/stories",  label: "Stories" },
-  { to: "/trending", label: "Trending" },
+  { to: "/positive", label: "Positive" },
   { to: "/outlets",  label: "Outlets" },
 ];
 

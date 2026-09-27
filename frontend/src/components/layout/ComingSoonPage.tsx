@@ -5,10 +5,10 @@ import { IconArrowUpRight } from "@/components/ui/Icon";
 
 /**
  * Editorial "in development" placeholder — used by every route whose
- * real page ships in a later phase (Trending, Outlets, individual
- * Outlet Profile, Search, About). Matches the mastheading pattern of
- * the rest of the product so the empty state still reads as part of
- * the same publication.
+ * real page ships in a later phase (Outlets, individual Outlet
+ * Profile, Search, About). Matches the mastheading pattern of the
+ * rest of the product so the empty state still reads as part of the
+ * same publication.
  *
  * Extracted from the old pages/Placeholder.tsx (which lived under
  * pages/ and mixed the shared component with specific page bodies)
