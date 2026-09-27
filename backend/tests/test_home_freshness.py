@@ -192,6 +192,95 @@ _skip_no_db = pytest.mark.skipif(
 )
 
 
+# ---------------------------------------------------------------------------
+# Test-only engine reset — Windows/pytest + async SQLAlchemy lifecycle fix
+# ---------------------------------------------------------------------------
+#
+# FastAPI's ``TestClient`` spins up a fresh asyncio event loop for each
+# request, then closes it. The app's async engine (see
+# ``src/db/session.py``) is a module-level ``@lru_cache(maxsize=1)``
+# singleton whose ``AsyncAdaptedQueuePool`` retains asyncpg connections
+# bound to whatever loop they were created in. On the *next* test, the
+# pool's ``pool_pre_ping`` fires on that dead loop and raises
+# ``RuntimeError: Event loop is closed`` — even though the freshness
+# query itself is correct. It surfaces on Windows because Python's
+# ``ProactorEventLoop`` is stricter about post-close callbacks than the
+# POSIX default; the same class of issue is documented widely for
+# async-SQLAlchemy-with-TestClient.
+#
+# Standard fix: for this test file only, swap the engine's pool for
+# ``NullPool``. NullPool discards each connection at return time, so
+# nothing is ever pooled across event loops. Autouse + ``monkeypatch``
+# scopes the change to a single test; the original ``_engine`` is
+# restored at teardown. No production code is modified.
+@pytest.fixture(autouse=True)
+def _reset_app_engine_between_tests(monkeypatch):
+    """Give every test a fresh app engine that uses ``NullPool``, so no
+    asyncpg connection outlives the TestClient event loop that created
+    it. Pure-Python tests never trigger ``_engine()`` so this is a
+    no-op for them."""
+    if _NO_DB:
+        # No test DB configured → the integration tests skip anyway,
+        # and touching the engine would try to import a config with
+        # missing env vars.
+        yield
+        return
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from src.config import get_settings
+    from src.db import session as _db_session
+
+    def _null_pool_engine():
+        s = get_settings()
+        return create_async_engine(
+            s.async_database_url,
+            poolclass=NullPool,
+            connect_args=s.async_connect_args,
+        )
+
+    # Defensively wipe the settings cache before we build our engine.
+    # Prior tests in the suite (notably
+    # ``tests/test_health.py::test_settings_sync_and_async_properties``
+    # and its ``client`` fixture, plus the LLM-model tests in
+    # test_compare/test_enrich) monkeypatch env vars, then call
+    # ``get_settings.cache_clear()`` followed by ``get_settings()`` —
+    # which caches Settings while the env is still monkeypatched.
+    # ``monkeypatch`` reverts the env at teardown but does NOT clear
+    # the ``@lru_cache`` on ``get_settings``, so the poisoned Settings
+    # object survives into subsequent tests. Without this line, our
+    # ``_null_pool_engine`` would see the leaked cache — e.g.
+    # ``DATABASE_URL = postgresql://u:p@h/d…`` (from test_health.py's
+    # sync/async-properties test) — and asyncpg would fail with
+    # ``socket.gaierror: [Errno 11001] getaddrinfo failed`` while
+    # trying to resolve host ``h``.
+    get_settings.cache_clear()
+
+    # Wipe any cached engine/factory from a previous test AND swap
+    # ``_engine`` for the NullPool factory for this test's duration.
+    _db_session._engine.cache_clear()
+    _db_session._sessionmaker.cache_clear()
+    monkeypatch.setattr(_db_session, "_engine", _null_pool_engine)
+    # ``_sessionmaker`` closes over the module-level ``_engine`` at
+    # call time (not at definition time), so clearing its cache is
+    # enough — the next call will build a fresh async_sessionmaker
+    # bound to the NullPool engine.
+    _db_session._sessionmaker.cache_clear()
+
+    yield
+
+    # Post-test: monkeypatch restores the original ``_engine`` symbol.
+    # Clear ``_sessionmaker`` so a subsequent test (or an unrelated
+    # test file that imports session) doesn't inherit a factory bound
+    # to this test's NullPool engine. Also clear the settings cache
+    # so we don't hand OUR rebuilt Settings (which was built against
+    # a possibly-different env than the next test wants) to the next
+    # test file. This is the mirror of the setup clear above.
+    _db_session._sessionmaker.cache_clear()
+    get_settings.cache_clear()
+
+
 def _hours_ago(h: float) -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=h)
 
@@ -299,15 +388,56 @@ def test_db_only_fresh_returned_and_ordering_preserved(db_session):
 @_skip_no_db
 def test_db_stale_story_still_visible_on_stories_page(db_session):
     """Item 7: the general Stories page (no ``fresh``) still returns
-    the stale story — it is filtered ONLY from Home."""
+    the stale story — it is filtered ONLY from Home. Also verifies
+    that Story Detail resolves regardless of age (the definitive
+    "stale stories are not archived out of the DB" proof).
+
+    Assertion strategy — total-count delta, not page-1 containment.
+    Neon dev-test branches are copy-on-write from their parent, so
+    this test DB carries whatever prod-scale data was ingested. A
+    100h-old story would be many pages deep in a strict
+    ``last_seen_at DESC`` list; asserting it appears in
+    ``page=1&limit=50`` is fragile on such a DB and produced a false
+    negative on the first Windows run. The total-count delta is
+    exact and pagination-invariant:
+      * the stale row must add exactly ONE to the archive total
+        (``/stories`` without ``fresh``), and
+      * exactly ZERO to the fresh-only total
+        (``/stories?fresh=true``).
+    Together those assertions prove the /stories-vs-/stories?fresh
+    split — a strictly stronger check than the previous
+    "story appears on page 1".
+    """
     _mk_outlet(db_session)
-    s = _mk_story(db_session, "_test_home_only_100h", _hours_ago(100))
     client = _api_client()
-    all_stories = client.get("/stories?page=1&limit=50").json()
-    assert any(item["id"] == s.id for item in all_stories["items"])
-    # And Story Detail is reachable for the stale story too.
+
+    before_all   = client.get("/stories?page=1&limit=1").json()["total"]
+    before_fresh = client.get("/stories?page=1&limit=1&fresh=true").json()["total"]
+
+    s = _mk_story(db_session, "_test_home_only_100h", _hours_ago(100))
+
+    after_all   = client.get("/stories?page=1&limit=1").json()["total"]
+    after_fresh = client.get("/stories?page=1&limit=1&fresh=true").json()["total"]
+
+    assert after_all - before_all == 1, (
+        f"stale story did not appear in the /stories archive: "
+        f"before_total={before_all} after_total={after_all}. "
+        "The freshness filter must not apply when `fresh` is omitted."
+    )
+    assert after_fresh == before_fresh, (
+        f"stale story leaked into /stories?fresh=true: "
+        f"before_total={before_fresh} after_total={after_fresh}. "
+        "A 100h-old story must be excluded from the fresh-only subset."
+    )
+
+    # Story Detail must resolve for a stale story too — the
+    # definitive "stale stories remain in the DB" proof, independent
+    # of any pagination or filter behaviour on the list endpoint.
     detail = client.get(f"/stories/{s.id}")
-    assert detail.status_code == 200
+    assert detail.status_code == 200, (
+        f"stale story /stories/{s.id} returned {detail.status_code} "
+        "instead of 200"
+    )
 
 
 @_skip_no_db

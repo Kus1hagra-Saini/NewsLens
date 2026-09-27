@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from src.db.models import (
     AnalysisRun,
@@ -615,6 +615,58 @@ def _add_extra_outlet_and_article(
     )
     db_session.add(aa)
     db_session.commit()
+
+    # ------------------------------------------------------------------
+    # Deterministic freshness bump — insulates the "new article
+    # revives a compared story" fixture from Python-vs-Postgres clock
+    # skew.
+    #
+    # ``src/ingestion/compare.py`` (ELIGIBLE_STORIES_SQL, ~line 132)
+    # decides a compared story is re-eligible only when
+    #
+    #     s.latest_analyzed_at > sc.generated_at
+    #
+    # where ``latest_analyzed_at = MAX(articles.state_updated_at)
+    # FILTER (state='analyzed')``. In the failing tests
+    # ``story_comparisons.generated_at`` was written from Python in the
+    # first ``compare_stories(...)`` call (``datetime.now(tz=utc)``),
+    # while THIS newly-inserted article's ``state_updated_at`` was
+    # filled by the DB's ``NOW()`` (via the column's ``server_default``).
+    # On a local Postgres those two clocks are the same wall clock and
+    # the strict ``>`` holds trivially; on Neon over the internet the
+    # two clocks are on different machines and can differ by tens of
+    # milliseconds, so the server-side ``NOW()`` can register as
+    # *earlier* than the Python-side ``generated_at`` — the story then
+    # fails eligibility and the second ``compare_stories(...)`` returns
+    # ``compared == 0`` even though a genuinely new article joined.
+    #
+    # Fix: after inserting the article, do a single server-side UPDATE
+    # that raises ``state_updated_at`` to strictly greater than any
+    # existing ``story_comparisons.generated_at`` for this story. All
+    # arithmetic happens inside Postgres against a single clock, so
+    # the inequality is guaranteed regardless of Python↔DB drift.
+    # ``COALESCE`` makes this a no-op when the story has no prior
+    # comparison (first-time compare), preserving the helper's other
+    # behaviors. Production ``compare.py`` is intentionally untouched
+    # — the strict ``>`` semantic is a deliberate guard against
+    # wasted LLM budget on no-op re-compares (see the docstring on
+    # ``_story_candidates``).
+    # ------------------------------------------------------------------
+    db_session.execute(
+        text(
+            "UPDATE articles"
+            "   SET state_updated_at = COALESCE("
+            "       (SELECT MAX(generated_at) + INTERVAL '1 second'"
+            "          FROM story_comparisons"
+            "         WHERE story_id = :sid),"
+            "       state_updated_at"
+            "   )"
+            " WHERE id = :aid"
+        ),
+        {"sid": story.id, "aid": article.id},
+    )
+    db_session.commit()
+    db_session.refresh(article)
     return outlet, article
 
 
