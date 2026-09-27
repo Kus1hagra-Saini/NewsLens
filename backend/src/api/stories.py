@@ -3,11 +3,23 @@
 Uses SQLAlchemy async sessions and existing indexes:
   * ``ix_stories_last_seen_at_desc`` — ORDER BY last_seen_at DESC
   * ``ix_articles_story_id``          — the article-by-story join
+
+Home freshness note
+-------------------
+The Home page reuses this listing via the shared ``useStories`` hook and
+passes ``?fresh=true``. When that flag is set, the query gains a single
+``WHERE Story.last_seen_at >= NOW() − home_freshness_hours`` clause
+(configurable via ``HOME_FRESHNESS_HOURS``, default 72). The Stories
+page keeps calling this endpoint WITHOUT the flag, so the historical
+archive stays intact. Story Detail (`/stories/{id}`) also stays
+accessible — no freshness filter is applied there.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
@@ -34,6 +46,7 @@ from src.api.schemas import (
     StoryImage,
     StorySummary,
 )
+from src.config import get_settings
 from src.db.models import (
     Article,
     ArticleAnalysis,
@@ -46,12 +59,61 @@ from src.db.models import (
 router = APIRouter(prefix="/stories", tags=["stories"])
 
 
-@router.get("", response_model=PaginatedStories)
-async def list_stories(session: Session, pg: Pagination) -> PaginatedStories:
-    # Total count in a single scalar query.
-    total = await session.scalar(select(func.count()).select_from(Story))
+def _freshness_cutoff(hours: int) -> datetime:
+    """Cutoff timestamp for the Home freshness window.
 
-    # Base story rows, most-recently-seen first.
+    Computed in Python rather than as a SQL ``INTERVAL`` for two reasons:
+      1. It sidesteps asyncpg's strict typing around integer→interval
+         casts (see the note in ``trends.py``).
+      2. It keeps the query engine-agnostic; the tests can construct a
+         Story with a known ``last_seen_at`` and reason about
+         eligibility without also matching Postgres' interval maths.
+
+    Sub-second skew between the API process's clock and the DB's clock
+    is meaningless for a 72-hour bucket. ``timezone.utc`` is used
+    explicitly because ``stories.last_seen_at`` is a
+    ``DateTime(timezone=True)`` column and a naive datetime would
+    trigger a comparison error under SQLAlchemy 2.x.
+    """
+    return datetime.now(timezone.utc) - timedelta(hours=hours)
+
+
+@router.get("", response_model=PaginatedStories)
+async def list_stories(
+    session: Session,
+    pg: Pagination,
+    fresh: bool = Query(
+        False,
+        description=(
+            "When true, restrict the result to stories whose "
+            "last_seen_at falls within the configured Home freshness "
+            "window (HOME_FRESHNESS_HOURS, default 72h). Used by the "
+            "Home page; the general Stories page omits it so the "
+            "historical archive stays intact."
+        ),
+    ),
+) -> PaginatedStories:
+    # Build the freshness WHERE clause once and share it between the
+    # COUNT and the SELECT so the reported ``total`` matches what the
+    # page can actually paginate through.
+    where_clauses: list = []
+    if fresh:
+        cutoff = _freshness_cutoff(get_settings().home_freshness_hours)
+        # Inclusive on the boundary — a story last seen exactly at the
+        # cutoff still qualifies (matches the project's existing
+        # trends.py + positive_stories.py style).
+        where_clauses.append(Story.last_seen_at >= cutoff)
+
+    # Total count in a single scalar query, respecting the same filter
+    # the row query uses so pagination math stays honest.
+    count_q = select(func.count()).select_from(Story)
+    if where_clauses:
+        count_q = count_q.where(*where_clauses)
+    total = await session.scalar(count_q)
+
+    # Base story rows, most-recently-seen first. Ordering is UNCHANGED
+    # by the freshness rule — the filter only constrains the candidate
+    # set; it does not touch ranking (spec Step 5).
     rows_q = (
         select(Story, StoryComparison.framing_spread)
         .outerjoin(StoryComparison, StoryComparison.story_id == Story.id)
@@ -59,6 +121,8 @@ async def list_stories(session: Session, pg: Pagination) -> PaginatedStories:
         .limit(pg["limit"])
         .offset(pg["offset"])
     )
+    if where_clauses:
+        rows_q = rows_q.where(*where_clauses)
     rows = (await session.execute(rows_q)).all()
 
     if not rows:

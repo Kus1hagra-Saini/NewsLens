@@ -20,6 +20,11 @@ export const queryKeys = {
   stories: (page: number, limit: number) => ["stories", page, limit] as const,
   story: (id: number) => ["story", id] as const,
   positiveStories: (limit: number) => ["positive-stories", limit] as const,
+  // Home fetches /stories with `fresh=true`; keep the cache key
+  // distinct from `stories(1, HOMEPAGE_STORY_LIMIT)` so a future
+  // caller that happens to request page 1 at the same limit doesn't
+  // silently get Home's filtered result set.
+  homeStories: (limit: number) => ["home-stories", limit] as const,
 } as const;
 
 /** Dashboard KPIs + recent-activity summary. */
@@ -61,9 +66,6 @@ export function useStories(page = 1, limit = 8) {
 /**
  * The homepage fetches a wider window of stories once and derives
  * Hot Now, Just Updated and Discover from the same in-memory payload.
- * This is intentionally a thin wrapper around ``useStories`` so it
- * shares TanStack's cache with anything else that requests the same
- * page+limit pair (no duplicate network calls).
  *
  * `HOMEPAGE_STORY_LIMIT` is capped at 40 because:
  *   - 1 featured + 3 secondary + 4 tail = 8 for Hot Now
@@ -72,13 +74,31 @@ export function useStories(page = 1, limit = 8) {
  *   - Even after de-duplication across sections, 30-ish uniques leaves
  *     headroom, and 40 is well below the backend's per-page cap.
  *
- * If the backend later enforces a smaller limit we can lower this
- * without any component changes.
+ * Freshness (Part 2): Home requests ``/stories?fresh=true``, which
+ * constrains the candidate set to stories whose ``last_seen_at`` falls
+ * within the backend's configured freshness window (default 72h;
+ * ``HOME_FRESHNESS_HOURS``). The filter is applied server-side, the
+ * frontend renders whatever list it receives — Home MUST NOT
+ * re-filter or drop stories by timestamp on the client, because the
+ * backend already owns the rule. Stale stories continue to appear on
+ * the /stories page, which calls the same endpoint WITHOUT this flag.
+ *
+ * Cache key is intentionally distinct from ``stories(1, limit)`` so a
+ * future caller asking for page 1 unfiltered doesn't share Home's
+ * filtered payload.
  */
 export const HOMEPAGE_STORY_LIMIT = 40;
 
 export function useHomeStories() {
-  return useStories(1, HOMEPAGE_STORY_LIMIT);
+  return useQuery<PaginatedStories>({
+    queryKey: queryKeys.homeStories(HOMEPAGE_STORY_LIMIT),
+    queryFn: () =>
+      apiGet<PaginatedStories>(
+        `/stories?page=1&limit=${HOMEPAGE_STORY_LIMIT}&fresh=true`,
+      ),
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+  });
 }
 
 /**

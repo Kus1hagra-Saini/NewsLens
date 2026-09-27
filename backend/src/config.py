@@ -78,6 +78,27 @@ class Settings(BaseSettings):
     # --- Kill switch ------------------------------------------------------
     ingestion_enabled: bool = Field(default=True, description="Master ingestion kill switch.")
 
+    # --- Home freshness ---------------------------------------------------
+    # Home is a "what's happening now" surface, not the archive. A story
+    # is eligible for Home only while its ``stories.last_seen_at`` is
+    # within this many hours of NOW. Old stories aren't archived — they
+    # simply stop appearing on Home and remain reachable through
+    # ``/stories`` and their existing Story Detail route. If a new
+    # article from another outlet later re-attaches to that story, the
+    # ingestion pipeline bumps ``last_seen_at`` and the story becomes
+    # Home-eligible again automatically (no separate "home freshness"
+    # timestamp is needed — the existing story lifecycle carries it).
+    home_freshness_hours: int = Field(
+        default=72,
+        ge=1,
+        description=(
+            "Freshness window for Home in hours. Stories with "
+            "last_seen_at older than NOW − home_freshness_hours are "
+            "excluded from Home. Overridable via the "
+            "HOME_FRESHNESS_HOURS environment variable."
+        ),
+    )
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
