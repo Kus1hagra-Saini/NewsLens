@@ -1,33 +1,74 @@
 name: ingest
 
-# Schedule is intentionally commented out during Week 1.
-# It will be enabled only after `python -m src.ingestion.run --once` has been
-# verified against Neon `dev` for all 5 Phase-1 outlets. Until then, kick off
-# runs manually with the `workflow_dispatch` trigger below.
+# Runs the existing NewsLens ingestion pipeline (fetch → extract → dedup →
+# embed → cluster → enrich → compare → Postgres) on a 2-hour cadence, plus
+# ad-hoc via workflow_dispatch. No pipeline logic lives here — the workflow
+# only sets up Python + uv, injects the required secrets, and invokes the
+# existing entry point (`python -m src.ingestion.run`). All budgets,
+# retries, LLM 429 handling and per-article state transitions are already
+# enforced by the pipeline itself.
 on:
-  # schedule:
-  #   - cron: '0 */2 * * *'   # every 2 hours
+  schedule:
+    # Every 2 hours (UTC). GitHub's scheduler drifts on free-tier
+    # workflows and can delay a run by several minutes — this is
+    # expected and documented; the pipeline is idempotent, and the
+    # concurrency guard below prevents overlap if a slow run bleeds
+    # into the next window.
+    - cron: '0 */2 * * *'
   workflow_dispatch:
+
+# Guard against a scheduled run starting while a previous one is still in
+# flight. `cancel-in-progress: false` MUST stay false: cancelling a live
+# ingestion mid-cycle would leave the `ingestion_runs` row stuck at
+# status='running' and could leave articles half-processed in an
+# intermediate state. Queueing (or, on GitHub Actions, skipping the newer
+# schedule tick if one is still queued) is the safe behaviour.
+concurrency:
+  group: ingest
+  cancel-in-progress: false
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
+    # Generous ceiling: a healthy Phase-1 cycle finishes in well under
+    # 15 minutes, but the first CI run also downloads the ~90MB
+    # sentence-transformers model. 45 min gives comfortable headroom
+    # for a slow Neon cold start + model download, and still fails the
+    # run before the next 2-hour window opens.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: backend
+
+    # Every value here must exist as a repository secret. Missing
+    # secrets fall through as empty strings; the pipeline's Pydantic
+    # Settings will fail loudly at startup, which surfaces as a red
+    # GitHub Actions run — the intended behaviour.
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      LLM_MODEL: ${{ secrets.LLM_MODEL }}
+      LLM_MODEL:    ${{ secrets.LLM_MODEL }}
+
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install uv
         run: pip install uv
+
       - name: Install dependencies
         run: uv sync
+
+      # `--triggered-by cron` when the schedule fires; the pipeline
+      # records this on the ingestion_runs row (§ CHECK constraint:
+      # cron | manual | backfill). Manual dispatches keep the default
+      # so they show as `manual` in the run history.
       - name: Run ingestion
-        run: uv run python -m src.ingestion.run
+        run: >-
+          uv run python -m src.ingestion.run
+          --triggered-by
+          ${{ github.event_name == 'schedule' && 'cron' || 'manual' }}
