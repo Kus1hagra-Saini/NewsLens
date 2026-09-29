@@ -18,6 +18,22 @@ Implementation notes:
     cluster names it — an LLM can later refine `summary`).
   - stories.article_count and stories.last_seen_at are maintained by this
     module so downstream reads don't need extra JOINs.
+
+ivfflat recall — see IVFFLAT_PROBES below
+--------------------------------------------
+The migration creates ``ix_articles_embedding_ivfflat`` with
+``lists = 100``. ivfflat is an **approximate** index: with the default
+``probes = 1``, an ``ORDER BY <=> LIMIT 1`` query scans only ONE of the
+100 IVF lists and can silently miss the true nearest neighbor when it
+lives in a different list. That failure mode is systematic for
+cross-outlet news — two outlets covering the same event use different
+framing and wording, so their embeddings sit close in cosine space but
+often land in different k-means lists during IVF training. The
+symptom: same-outlet follow-ups cluster together, cross-outlet
+articles at similarity 0.9+ get placed in separate stories. Setting
+``probes = lists`` forces every list to be searched, giving exact
+recall (equivalent to a sequential scan) — which is the correctness
+guarantee the 0.75 threshold assumes.
 """
 
 from __future__ import annotations
@@ -38,6 +54,11 @@ log = logging.getLogger(__name__)
 SIMILARITY_THRESHOLD = 0.75
 # Documented look-back window; §10 step 6.
 LOOKBACK_DAYS = 3
+# Matches ``CREATE INDEX ... WITH (lists = 100)`` in
+# alembic/versions/0001_initial_schema.py. Setting probes = lists gives
+# EXACT nearest-neighbor recall from the ivfflat index. If a future
+# migration changes the list count, update this constant to match.
+IVFFLAT_PROBES = 100
 
 
 @dataclass
@@ -60,6 +81,18 @@ def cluster_articles(
     similarity is above `threshold`; otherwise creates a new story.
     Returns counts for logging + ingestion_runs bookkeeping.
     """
+    # Force exact ivfflat recall for THIS transaction. Without this the
+    # KNN neighbor query below scans only 1 of the 100 IVF lists (the
+    # default ``probes``), and near-identical cross-outlet embeddings
+    # that happen to land in different lists get missed — the article
+    # then creates a duplicate story instead of joining the correct
+    # one. See module docstring for the full explanation.
+    #
+    # SET LOCAL is scoped to the current transaction, which
+    # ``session.commit()`` at the end of this function closes; no
+    # session-wide state leaks to other queries.
+    session.execute(text(f"SET LOCAL ivfflat.probes = {IVFFLAT_PROBES}"))
+
     q = (
         select(Article)
         .where(Article.processing_state == "embedded")
