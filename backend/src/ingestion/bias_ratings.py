@@ -108,6 +108,93 @@ RATINGS: tuple[BiasRatingRecord, ...] = (
         rating_url="https://mediabiasfactcheck.com/hindustan-times/",
         rated_at=date(2024, 12, 13),
     ),
+    # ------------------------------------------------------------------
+    # Phase-1 expansion outlets (added 2026-09-30). Every rating below
+    # was fetched from the outlet's own MBFC page — the URL is
+    # verifiable and the ``original_label`` is the exact bias-line
+    # label MBFC publishes. The ``rated_at`` value is MBFC's page
+    # "Last Updated" date.
+    # ------------------------------------------------------------------
+    # India Today — https://mediabiasfactcheck.com/india-today/
+    BiasRatingRecord(
+        outlet_slug="india-today",
+        source="MBFC",
+        original_label="Right-Center",
+        rating_url="https://mediabiasfactcheck.com/india-today/",
+        rated_at=date(2025, 1, 3),
+    ),
+    # ThePrint — https://mediabiasfactcheck.com/theprint-bias/
+    BiasRatingRecord(
+        outlet_slug="theprint",
+        source="MBFC",
+        original_label="Right-Center",
+        rating_url="https://mediabiasfactcheck.com/theprint-bias/",
+        rated_at=date(2024, 1, 27),
+    ),
+    # Mint (LiveMint) — https://mediabiasfactcheck.com/mint-newspaper-bias/
+    BiasRatingRecord(
+        outlet_slug="livemint",
+        source="MBFC",
+        original_label="Least Biased",
+        rating_url="https://mediabiasfactcheck.com/mint-newspaper-bias/",
+        rated_at=date(2025, 1, 5),
+    ),
+    # The Economic Times — https://mediabiasfactcheck.com/the-economic-times/
+    BiasRatingRecord(
+        outlet_slug="economic-times",
+        source="MBFC",
+        original_label="Right-Center",
+        rating_url="https://mediabiasfactcheck.com/the-economic-times/",
+        rated_at=date(2024, 12, 6),
+    ),
+    # News18 — https://mediabiasfactcheck.com/news18/
+    BiasRatingRecord(
+        outlet_slug="news18",
+        source="MBFC",
+        original_label="Right-Center",
+        rating_url="https://mediabiasfactcheck.com/news18/",
+        rated_at=date(2025, 1, 3),
+    ),
+    # The Wire — https://mediabiasfactcheck.com/the-wire-india/
+    BiasRatingRecord(
+        outlet_slug="the-wire",
+        source="MBFC",
+        original_label="Left-Center",
+        rating_url="https://mediabiasfactcheck.com/the-wire-india/",
+        rated_at=date(2025, 6, 19),
+    ),
+    # Scroll.in — https://mediabiasfactcheck.com/scroll-in/
+    BiasRatingRecord(
+        outlet_slug="scroll-in",
+        source="MBFC",
+        original_label="Left-Center",
+        rating_url="https://mediabiasfactcheck.com/scroll-in/",
+        rated_at=date(2025, 5, 18),
+    ),
+    # The Tribune (India) — https://mediabiasfactcheck.com/the-tribune-india/
+    BiasRatingRecord(
+        outlet_slug="tribune-india",
+        source="MBFC",
+        original_label="Right-Center",
+        rating_url="https://mediabiasfactcheck.com/the-tribune-india/",
+        rated_at=date(2026, 5, 29),
+    ),
+    # Business Standard — https://mediabiasfactcheck.com/business-standard/
+    BiasRatingRecord(
+        outlet_slug="business-standard",
+        source="MBFC",
+        original_label="Right-Center",
+        rating_url="https://mediabiasfactcheck.com/business-standard/",
+        rated_at=date(2024, 12, 16),
+    ),
+    # Financial Express — https://mediabiasfactcheck.com/financial-express/
+    BiasRatingRecord(
+        outlet_slug="financial-express",
+        source="MBFC",
+        original_label="Right-Center",
+        rating_url="https://mediabiasfactcheck.com/financial-express/",
+        rated_at=date(2024, 7, 12),
+    ),
 )
 
 

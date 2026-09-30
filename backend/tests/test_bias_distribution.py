@@ -110,6 +110,116 @@ def test_source_priority_is_nonempty():
 
 
 # =============================================================================
+# Full-coverage of phase_1 outlets (added 2026-09-30 with the
+# 10-outlet expansion — every configured outlet must ship with a
+# documented external rating so the Media Bias Distribution stays
+# eligible for the majority of stories, without lowering the 3-rated
+# threshold the spec requires).
+# =============================================================================
+
+# Expected mapping — MBFC raw label → NewsLens display bucket. Keeps
+# the researched input auditable in one place; if a rating is ever
+# changed at MBFC, the test fails and forces a review of the source.
+EXPECTED_MBFC_PHASE_1: dict[str, tuple[str, str]] = {
+    # outlet_slug: (mbfc_original_label, normalized_category)
+    # ── Original five ──
+    "the-hindu":         ("Left-Center",  "left"),
+    "times-of-india":    ("Right-Center", "right"),
+    "indian-express":    ("Left-Center",  "left"),
+    "ndtv":              ("Right-Center", "right"),
+    "hindustan-times":   ("Left-Center",  "left"),
+    # ── Phase-1 expansion (added 2026-09-30) ──
+    "india-today":       ("Right-Center", "right"),
+    "theprint":          ("Right-Center", "right"),
+    "livemint":          ("Least Biased", "center"),
+    "economic-times":    ("Right-Center", "right"),
+    "news18":            ("Right-Center", "right"),
+    "the-wire":          ("Left-Center",  "left"),
+    "scroll-in":         ("Left-Center",  "left"),
+    "tribune-india":     ("Right-Center", "right"),
+    "business-standard": ("Right-Center", "right"),
+    "financial-express": ("Right-Center", "right"),
+}
+
+
+def test_ratings_cover_every_phase_1_outlet():
+    """Every outlet declared active in phase_1 must have a documented
+    MBFC rating in RATINGS. Anything missing means the Media Bias
+    Distribution will silently degrade to "not enough rated coverage"
+    for stories including that outlet — regression guard against
+    forgetting to add a rating when a new outlet is onboarded."""
+    from src.ingestion.outlets import load_outlets
+
+    yaml_slugs = {spec.slug for spec in load_outlets(["phase_1"])}
+    rated_slugs = {r.outlet_slug for r in RATINGS if r.source == "MBFC"}
+    missing = yaml_slugs - rated_slugs
+    assert not missing, (
+        f"phase_1 outlets missing MBFC rating in bias_ratings.RATINGS: "
+        f"{sorted(missing)}"
+    )
+
+
+def test_no_ratings_for_undeclared_outlets():
+    """RATINGS must not contain ghost slugs that no outlet in
+    outlets.yaml references — those would be dead entries the seed
+    would silently skip with 'outlet not present'."""
+    from src.ingestion.outlets import load_outlets
+
+    yaml_slugs = {spec.slug for spec in load_outlets(["phase_1"])}
+    ghost = {r.outlet_slug for r in RATINGS if r.source == "MBFC"} - yaml_slugs
+    assert not ghost, (
+        f"RATINGS references outlet slug(s) not in phase_1: {sorted(ghost)}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("slug", "expected_label", "expected_category"),
+    [(s, lbl, cat) for s, (lbl, cat) in EXPECTED_MBFC_PHASE_1.items()],
+)
+def test_each_phase_1_rating_matches_expected_mapping(
+    slug: str, expected_label: str, expected_category: str,
+):
+    """Every phase_1 outlet's stored MBFC rating and its
+    normalisation must match the researched-and-verified value in
+    EXPECTED_MBFC_PHASE_1. If MBFC updates a rating, this test fails
+    and forces a deliberate update to both RATINGS and the expected
+    map — the change never happens silently."""
+    matching = [
+        r for r in RATINGS
+        if r.source == "MBFC" and r.outlet_slug == slug
+    ]
+    assert len(matching) == 1, (
+        f"expected exactly one MBFC rating for {slug!r}, got {len(matching)}"
+    )
+    rec = matching[0]
+    assert rec.original_label == expected_label, (
+        f"{slug}: stored label {rec.original_label!r} != "
+        f"expected {expected_label!r}"
+    )
+    normalized = normalize_label(rec.source, rec.original_label)
+    assert normalized == expected_category, (
+        f"{slug}: label {rec.original_label!r} normalises to "
+        f"{normalized!r}, expected {expected_category!r}"
+    )
+    # URL sanity — every rating must carry a real MBFC link so the
+    # source is verifiable in the UI's rating-provenance drawer.
+    assert rec.rating_url.startswith("https://mediabiasfactcheck.com/"), (
+        f"{slug}: rating_url {rec.rating_url!r} is not on MBFC"
+    )
+
+
+def test_ratings_are_deduplicated_per_source_and_slug():
+    """(source, outlet_slug) is the effective uniqueness key — the
+    outlet_bias_ratings table has ``ux_outlet_bias_ratings_outlet_source``
+    UNIQUE on (outlet_id, source), so any dup in RATINGS would cause
+    seed to churn (insert + update the same row within one run)."""
+    from collections import Counter
+    key_counts = Counter((r.source, r.outlet_slug) for r in RATINGS)
+    dupes = [k for k, c in key_counts.items() if c > 1]
+    assert not dupes, f"duplicate (source, slug) entries in RATINGS: {dupes}"
+
+
+# =============================================================================
 # Eligibility — spec tests 1, 2, 3, 4
 # =============================================================================
 

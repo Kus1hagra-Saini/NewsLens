@@ -14,12 +14,11 @@
 # update it here and re-verify. Do not invent URLs and do not replace
 # an official feed with an aggregator.
 #
-# Bias-ratings coverage: src/ingestion/bias_ratings.py currently carries
-# MBFC ratings ONLY for the original five outlets. The ten new outlets
-# will be treated as "unrated" by the bias-distribution UI until
-# ratings are added there — see the RATINGS table in that module. The
-# framework already handles unrated outlets correctly, so this is safe
-# but visible in the UI.
+# Bias-ratings coverage: all 15 outlets below carry documented MBFC
+# ratings in src/ingestion/bias_ratings.py::RATINGS (added 2026-09-30
+# alongside the ten-outlet expansion). Every rating is a
+# publication-level external assessment from Media Bias/Fact Check —
+# NewsLens does NOT classify outlets itself.
 
 phase_1:
   # ── Original five (URLs preserved — validated by real ingestion runs) ──
