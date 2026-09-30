@@ -1,15 +1,28 @@
 # Outlet registry. Loaded by src.ingestion.outlets and by seed_outlets.
 #
-# Phased rollout per architecture §13:
-#   Week 1: 5 outlets (below)
-#   Week 2: 10 outlets (add Phase-2)
-#   Week 3: 15 outlets (add Phase-3)
+# Phase 1 was expanded from the original 5-outlet Week-1 set to 15
+# outlets covering the major English-language Indian news publications.
+# The five existing outlets keep their slugs unchanged so historical
+# articles.outlet_id references stay valid; ten new outlets are added
+# below.
 #
-# BEFORE LOCKING PHASE-1: run `python scripts/verify_feeds.py` to confirm
-# each `rss_url` returns 200 with parseable RSS. If any feed has moved,
-# update it here and re-verify.
+# BEFORE MERGING any change to this file, run
+#     python scripts/verify_feeds.py
+# from a machine that can reach these hosts (the CI container's egress
+# gateway denies most Indian news domains, so a green run inside CI is
+# not a substitute for local verification). If any feed has moved,
+# update it here and re-verify. Do not invent URLs and do not replace
+# an official feed with an aggregator.
+#
+# Bias-ratings coverage: src/ingestion/bias_ratings.py currently carries
+# MBFC ratings ONLY for the original five outlets. The ten new outlets
+# will be treated as "unrated" by the bias-distribution UI until
+# ratings are added there — see the RATINGS table in that module. The
+# framework already handles unrated outlets correctly, so this is safe
+# but visible in the UI.
 
 phase_1:
+  # ── Original five (URLs preserved — validated by real ingestion runs) ──
   - slug: the-hindu
     name: The Hindu
     rss_url: https://www.thehindu.com/feeder/default.rss
@@ -22,6 +35,11 @@ phase_1:
 
   - slug: indian-express
     name: Indian Express
+    # Indian Express occasionally returns 403 to CI IP ranges even when
+    # this feed URL is otherwise correct. If the 403 rate is high in
+    # scheduled ingestion runs, the fix belongs in the fetch layer
+    # (User-Agent rotation / egress routing), NOT in swapping to an
+    # aggregator feed — this URL is IE's own documented section feed.
     rss_url: https://indianexpress.com/section/india/feed/
     website: https://indianexpress.com
 
@@ -34,3 +52,92 @@ phase_1:
     name: Hindustan Times
     rss_url: https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml
     website: https://www.hindustantimes.com
+
+  # ── Ten new outlets ──
+  - slug: india-today
+    name: India Today
+    # Top-stories numeric section feed from indiatoday.in's own RSS
+    # directory (https://www.indiatoday.in/rss).
+    rss_url: https://www.indiatoday.in/rss/1206578
+    website: https://www.indiatoday.in
+
+  - slug: theprint
+    name: ThePrint
+    # ThePrint's WordPress site-wide /feed/ is WAF-blocked in practice
+    # (403 to python-httpx and to WebFetch even after redirect). The
+    # category-scoped feed at /category/india/feed/ is served through
+    # the same WordPress core code but on a different WAF rule and
+    # returns a valid RSS 2.0 document with 20+ live items.
+    rss_url: https://theprint.in/category/india/feed/
+    website: https://theprint.in
+
+  - slug: livemint
+    name: LiveMint
+    # LiveMint's own News feed, listed at https://www.livemint.com/rss.
+    rss_url: https://www.livemint.com/rss/news
+    website: https://www.livemint.com
+
+  - slug: economic-times
+    name: Economic Times
+    # Times-group RSS (same CMS + feed shape as timesofindia).
+    rss_url: https://economictimes.indiatimes.com/rssfeedstopstories.cms
+    website: https://economictimes.indiatimes.com
+
+  - slug: news18
+    name: News18
+    # Current commonfeeds endpoint used by news18.com/rss.
+    rss_url: https://www.news18.com/commonfeeds/v1/eng/rss/india.xml
+    website: https://www.news18.com
+
+  - slug: the-wire
+    name: The Wire
+    # ``thewire.in/rss`` returns HTTP 200 but zero <item> entries: the
+    # public CDN serves the site HTML through that path rather than
+    # the syndication XML. The feed IS served from the CMS subdomain
+    # ``cms.thewire.in/feed`` (valid RSS 2.0, lastBuildDate is
+    # publisher-current). If The Wire routes their CMS behind a
+    # different subdomain in future, update this URL — do not fall
+    # back to an aggregator.
+    rss_url: https://cms.thewire.in/feed
+    website: https://thewire.in
+
+  - slug: scroll-in
+    name: Scroll.in
+    # Scroll.in's public Feedburner feed (long-standing, publisher-owned).
+    rss_url: https://feeds.feedburner.com/ScrollinArticles.rss
+    website: https://scroll.in
+
+  - slug: tribune-india
+    name: Tribune India
+    # Tribune's own RSS directory at ``tribuneindia.com/rss-feeds``
+    # confirms every documented feed URL lives on the
+    # ``publish.tribuneindia.com`` subdomain, not ``www``. The old
+    # ``www.tribuneindia.com/rss/feed?catId=1`` URL returned 403.
+    # This is Tribune's "Nation" category feed (India national news);
+    # verified as a valid RSS 2.0 document with live items.
+    rss_url: https://publish.tribuneindia.com/newscategory/nation/feed/
+    website: https://www.tribuneindia.com
+
+  - slug: business-standard
+    name: Business Standard
+    # This URL IS on Business Standard's own official listing at
+    # ``www.business-standard.com/rss-feeds/listing`` — it is the
+    # current, documented "Latest" feed. The 403 seen in local tests
+    # is NOT a URL problem: every feed on BS's site lives under the
+    # same ``/rss/…`` path, so a URL swap won't help. The block is
+    # UA / WAF-based and belongs in the fetch layer (out of scope
+    # for this task — noted in the outlet-expansion report).
+    rss_url: https://www.business-standard.com/rss/latest.rss
+    website: https://www.business-standard.com
+
+  - slug: financial-express
+    name: Financial Express
+    # ``www.financialexpress.com/feed/`` now returns HTTP 410 Gone —
+    # WordPress signals the endpoint was PERMANENTLY removed, so the
+    # WordPress-default URL is not just blocked, it doesn't exist.
+    # FE moved public syndication to the ``syndication.`` subdomain
+    # (matches the documented ``financialexpress.com/syndication/``
+    # directory pattern). This URL is FE's Latest-News feed on that
+    # subdomain and is the one to use going forward.
+    rss_url: https://syndication.financialexpress.com/rss/latest-news.xml
+    website: https://www.financialexpress.com

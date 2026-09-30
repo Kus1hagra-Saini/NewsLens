@@ -92,10 +92,23 @@ def db_session(engine) -> Session:
         # pattern; the orchestrator test uses 'the-hindu' so we include
         # it too (any real ingestion state on the shared dev DB has
         # already been rolled back or lived in a separate DB anyway).
+        # NOTE (2026-09-30 outlet-expansion): The prior cleanup queries
+        # also matched ``slug='the-hindu'`` — the comment above referenced
+        # an "orchestrator test" that no longer exists (stale cleanup
+        # rule). ``the-hindu`` is now a PRODUCTION outlet slug in
+        # ``src/ingestion/outlets.yaml`` (phase_1), and its bias rating
+        # in ``bias_ratings.py`` also references that slug. Running the
+        # DB test suite against a shared dev DB used to nuke The Hindu +
+        # every article that belonged to it on every teardown, which is
+        # exactly why The Hindu kept vanishing from the active-outlet
+        # discovery loop. Cleanup now identifies test-owned rows ONLY by
+        # the ``_test_%`` slug/URL and ``_test_%``/``_dbg_%`` story title
+        # patterns. Any test that needs a real production-slug outlet
+        # must create its outlet under a ``_test_`` slug instead.
         session.execute(text("""
             WITH test_outlets AS (
                 SELECT id FROM outlets
-                 WHERE slug LIKE '_test_%' OR slug='the-hindu'
+                 WHERE slug LIKE '_test_%'
             ),
             test_articles AS (
                 SELECT id FROM articles
@@ -116,14 +129,14 @@ def db_session(engine) -> Session:
                SELECT id FROM articles
                 WHERE outlet_id IN (
                   SELECT id FROM outlets
-                   WHERE slug LIKE '_test_%' OR slug='the-hindu'
+                   WHERE slug LIKE '_test_%'
                 ) OR url LIKE '_test_%');
             DELETE FROM story_overrides
              WHERE article_id IN (
                SELECT id FROM articles
                 WHERE outlet_id IN (
                   SELECT id FROM outlets
-                   WHERE slug LIKE '_test_%' OR slug='the-hindu'
+                   WHERE slug LIKE '_test_%'
                 ) OR url LIKE '_test_%')
                 OR forced_story_id IN (
                   SELECT id FROM stories
@@ -135,12 +148,12 @@ def db_session(engine) -> Session:
             DELETE FROM articles
              WHERE outlet_id IN (
                SELECT id FROM outlets
-                WHERE slug LIKE '_test_%' OR slug='the-hindu'
+                WHERE slug LIKE '_test_%'
              ) OR url LIKE '_test_%';
             DELETE FROM stories
              WHERE title LIKE '_test_%' OR title LIKE '_dbg_%';
             DELETE FROM outlets
-             WHERE slug LIKE '_test_%' OR slug='the-hindu';
+             WHERE slug LIKE '_test_%';
             -- ingestion_runs rows from tests accumulate; they carry no
             -- reference to test data and are harmless. Purge periodically
             -- by hand if desired.

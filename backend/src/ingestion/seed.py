@@ -24,14 +24,29 @@ log = logging.getLogger(__name__)
 
 
 def seed_outlets(specs: list[OutletSpec]) -> tuple[int, int]:
-    """Upsert `specs` into outlets. Returns (inserted, updated) counts."""
+    """Upsert `specs` into outlets. Returns (inserted, updated) counts.
+
+    Invariant: every outlet listed in ``outlets.yaml`` for the phases
+    being seeded ends this call with ``active=True``. If an existing
+    row was previously set to ``active=False`` (which would silently
+    exclude it from ``_load_active_outlets`` in ingestion runs), seed
+    reactivates it — the yaml is the source of truth for which outlets
+    the pipeline should be running. To retire an outlet, remove it
+    from the yaml rather than flipping its row's ``active`` flag.
+    """
     engine = create_engine(get_settings().sync_database_url, pool_pre_ping=True)
     inserted = 0
     updated = 0
     with engine.begin() as conn:
         for spec in specs:
             existing = conn.execute(
-                select(Outlet.id, Outlet.rss_url, Outlet.website, Outlet.name)
+                select(
+                    Outlet.id,
+                    Outlet.rss_url,
+                    Outlet.website,
+                    Outlet.name,
+                    Outlet.active,
+                )
                 .where(Outlet.slug == spec.slug)
             ).first()
             if existing is None:
@@ -47,11 +62,14 @@ def seed_outlets(specs: list[OutletSpec]) -> tuple[int, int]:
                 inserted += 1
                 log.info("seeded outlet slug=%s", spec.slug)
             else:
-                # Update only when a metadata field changed.
+                # Update when metadata drifted OR when the row is
+                # currently inactive — the yaml lists this outlet, so
+                # it must be active.
                 needs_update = (
                     existing.rss_url != spec.rss_url
                     or existing.website != spec.website
                     or existing.name != spec.name
+                    or existing.active is not True
                 )
                 if needs_update:
                     conn.execute(
@@ -61,10 +79,15 @@ def seed_outlets(specs: list[OutletSpec]) -> tuple[int, int]:
                             name=spec.name,
                             rss_url=spec.rss_url,
                             website=spec.website,
+                            active=True,
                         )
                     )
                     updated += 1
-                    log.info("updated outlet slug=%s", spec.slug)
+                    log.info(
+                        "updated outlet slug=%s "
+                        "(active_was=%s → active=True)",
+                        spec.slug, existing.active,
+                    )
     engine.dispose()
     return inserted, updated
 
