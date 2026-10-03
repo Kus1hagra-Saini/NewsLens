@@ -339,7 +339,64 @@ def _record_llm_failure(
 # outlet joins.
 COVERAGE_PRIORITY_MIN_OUTLETS = 2
 
-_PRIORITIZED_SELECT_SQL = text("""
+# Home freshness window — matches ``HOME_FRESHNESS_HOURS`` on
+# ``src.config.Settings`` (default 72). The SQL embeds the number
+# directly because ``INTERVAL`` can't take a bind parameter in a
+# backend-independent way; if the default changes we update it here too.
+HOME_FRESHNESS_HOURS = 72
+
+# How many top Home stories are the enrichment selector's highest tier.
+# Matches ``HOT_NOW_COUNT`` on the frontend's Home page so the stories
+# the user actually sees at the top are the ones the selector
+# prioritizes. A story leaving the top-N (because another story
+# overtakes it on coverage, or its ``last_seen_at`` ages out of the
+# fresh window) is NOT permanently excluded — it drops into the
+# non-Home tiers below and still competes for leftover budget.
+HOME_PRIORITY_TOP_N = 8
+
+# The three-tier priority the selector enforces, documented so the
+# log line is readable. Values match ``_PRIORITIZED_SELECT_SQL``.
+_PRIORITY_HOME_TOP       = 0
+_PRIORITY_NON_HOME_WITH_COMPARISON = 1   # the old "P1" tier
+_PRIORITY_NON_HOME_NO_COMPARISON   = 2   # the old "P2" tier
+
+# ---------------------------------------------------------------------------
+# Fairness rewrite — 2026-10-04
+#
+# The previous flat ORDER BY let one high-coverage story (observed on
+# dev: story 1805 with 9 outlets / 118 articles) consume all 20 slots
+# of a single enrich call, leaving every other Home-visible story
+# with zero framing data. The rewrite preserves that story's priority
+# but caps its per-call share, and lifts the top-N Home stories above
+# the previous P1/P2 tiering so stories the user actually sees are
+# analyzed first.
+#
+# Three CTEs:
+#   story_outlets    — per-story aggregates (n_outlets, n_articles,
+#                      latest_published), unchanged from before.
+#   home_top         — top-``:home_top_n`` Home stories, ordered by the
+#                      same signal the frontend's Hot Now uses so the
+#                      SQL and the UI never disagree on "the top".
+#   with_outlet_rank — assigns ``rank_in_outlet`` = row number within
+#                      each (story, outlet) by newest published first.
+#                      rank_in_outlet = 1 is the newest clustered
+#                      article from that outlet in that story.
+#   with_story_rank  — assigns ``rank_in_story`` = row number within
+#                      each story, outlet-diverse first: rank_in_outlet
+#                      = 1 of every outlet comes before any
+#                      rank_in_outlet = 2 article. The per-story cap
+#                      (``:per_story_cap``) is applied against this
+#                      value so the first ``cap`` picks maximise
+#                      cross-outlet coverage.
+#
+# Final SELECT orders by (tier, n_outlets DESC, n_articles DESC,
+# latest_published DESC, rank_in_story ASC, article_id ASC) and
+# LIMITs the whole thing to ``:lim`` — the ``batch_limit`` the caller
+# passed. Everything downstream (``enrich_articles``, retry/attempt
+# logic, rate-limit flow, compare.py) is unchanged.
+# ---------------------------------------------------------------------------
+
+_PRIORITIZED_SELECT_SQL = text(f"""
     WITH story_outlets AS (
       SELECT story_id,
              COUNT(DISTINCT outlet_id) AS n_outlets,
@@ -350,29 +407,69 @@ _PRIORITIZED_SELECT_SQL = text("""
          AND processing_state IN
              ('clustered', 'analyzed', 'complete')
        GROUP BY story_id
+    ),
+    home_top AS (
+      SELECT s.id AS story_id
+        FROM stories s
+        JOIN story_outlets so ON so.story_id = s.id
+       WHERE s.last_seen_at >=
+             NOW() - INTERVAL '{HOME_FRESHNESS_HOURS} hours'
+         AND so.n_outlets >= :min_outlets
+       ORDER BY so.n_outlets      DESC,
+                so.n_articles     DESC,
+                s.last_seen_at    DESC,
+                s.id              DESC
+       LIMIT :home_top_n
+    ),
+    with_outlet_rank AS (
+      SELECT a.id           AS article_id,
+             o.slug          AS outlet_slug,
+             a.story_id,
+             a.outlet_id,
+             a.published_at,
+             a.attempt_count,
+             so.n_outlets,
+             so.n_articles,
+             so.latest_published,
+             sc.story_id IS NOT NULL AS has_comparison,
+             ht.story_id IS NOT NULL AS is_home_top,
+             ROW_NUMBER() OVER (
+                 PARTITION BY a.story_id, a.outlet_id
+                 ORDER BY a.published_at DESC, a.id ASC
+             ) AS rank_in_outlet
+        FROM articles a
+        JOIN outlets      o  ON o.id       = a.outlet_id
+        JOIN story_outlets so ON so.story_id = a.story_id
+        LEFT JOIN story_comparisons sc ON sc.story_id = a.story_id
+        LEFT JOIN home_top          ht ON ht.story_id = a.story_id
+       WHERE a.processing_state = 'clustered'
+         AND a.attempt_count   < :max_attempts
+         AND so.n_outlets      >= :min_outlets
+    ),
+    with_story_rank AS (
+      SELECT *,
+             ROW_NUMBER() OVER (
+                 PARTITION BY story_id
+                 ORDER BY rank_in_outlet ASC,
+                          published_at   DESC,
+                          article_id     ASC
+             ) AS rank_in_story
+        FROM with_outlet_rank
     )
-    SELECT a.id                                    AS article_id,
-           o.slug                                  AS outlet_slug,
-           CASE WHEN sc.story_id IS NOT NULL
-                THEN 1 ELSE 2 END                  AS priority_tier
-      FROM articles a
-      JOIN outlets      o  ON o.id       = a.outlet_id
-      JOIN story_outlets so ON so.story_id = a.story_id
-      LEFT JOIN story_comparisons sc
-             ON sc.story_id = a.story_id
-     WHERE a.processing_state = 'clustered'
-       AND a.attempt_count < :max_attempts
-       AND so.n_outlets >= :min_outlets
+    SELECT article_id, outlet_slug
+      FROM with_story_rank
+     WHERE rank_in_story <= :per_story_cap
      ORDER BY
-       -- P1: stories with an existing comparison + fresh clustered coverage
-       -- P2: stories that have just become multi-outlet (no comparison yet)
-       CASE WHEN sc.story_id IS NOT NULL THEN 1 ELSE 2 END ASC,
-       -- Within a tier: strongest coverage signal first
-       so.n_outlets       DESC,
-       so.n_articles      DESC,
-       so.latest_published DESC,
-       a.published_at     DESC,
-       a.id               ASC
+       CASE
+         WHEN is_home_top    THEN {_PRIORITY_HOME_TOP}
+         WHEN has_comparison THEN {_PRIORITY_NON_HOME_WITH_COMPARISON}
+         ELSE                     {_PRIORITY_NON_HOME_NO_COMPARISON}
+       END,
+       n_outlets        DESC,
+       n_articles       DESC,
+       latest_published DESC,
+       rank_in_story    ASC,
+       article_id       ASC
      LIMIT :lim
 """)
 
@@ -383,7 +480,8 @@ def _select_clustered_prioritized(
     story_ids: list[int] | None = None,
 ) -> list[tuple[int, str]]:
     """Return up to *batch_limit* (article_id, outlet_slug) tuples using
-    the coverage-priority ordering. Single-outlet stories are excluded.
+    the Home-priority / per-story-cap selector. Single-outlet stories
+    are excluded by the ``so.n_outlets >= :min_outlets`` filter.
 
     ``story_ids`` (test / manual-retry scope): when given, both the
     ``story_outlets`` CTE and the outer SELECT are restricted to those
@@ -391,13 +489,19 @@ def _select_clustered_prioritized(
     against a shared dev-test DB without picking up unrelated real
     coverage. Production callers pass ``None`` and get full ordering.
     """
+    from src.config import get_settings
+    settings = get_settings()
+    per_story_cap = settings.llm_enrich_per_story_cap
+
     if story_ids is None:
         rows = session.execute(
             _PRIORITIZED_SELECT_SQL,
             {
-                "lim": batch_limit,
-                "max_attempts": MAX_ATTEMPTS,
-                "min_outlets": COVERAGE_PRIORITY_MIN_OUTLETS,
+                "lim":            batch_limit,
+                "max_attempts":   MAX_ATTEMPTS,
+                "min_outlets":    COVERAGE_PRIORITY_MIN_OUTLETS,
+                "home_top_n":     HOME_PRIORITY_TOP_N,
+                "per_story_cap":  per_story_cap,
             },
         ).all()
     else:
@@ -416,35 +520,81 @@ def _select_clustered_prioritized(
                  AND processing_state IN
                      ('clustered', 'analyzed', 'complete')
                GROUP BY story_id
+            ),
+            home_top AS (
+              SELECT s.id AS story_id
+                FROM stories s
+                JOIN story_outlets so ON so.story_id = s.id
+               WHERE s.last_seen_at >=
+                     NOW() - INTERVAL '{HOME_FRESHNESS_HOURS} hours'
+                 AND so.n_outlets >= :min_outlets
+                 AND s.id IN ({ids_sql})
+               ORDER BY so.n_outlets      DESC,
+                        so.n_articles     DESC,
+                        s.last_seen_at    DESC,
+                        s.id              DESC
+               LIMIT :home_top_n
+            ),
+            with_outlet_rank AS (
+              SELECT a.id          AS article_id,
+                     o.slug         AS outlet_slug,
+                     a.story_id,
+                     a.outlet_id,
+                     a.published_at,
+                     a.attempt_count,
+                     so.n_outlets,
+                     so.n_articles,
+                     so.latest_published,
+                     sc.story_id IS NOT NULL AS has_comparison,
+                     ht.story_id IS NOT NULL AS is_home_top,
+                     ROW_NUMBER() OVER (
+                         PARTITION BY a.story_id, a.outlet_id
+                         ORDER BY a.published_at DESC, a.id ASC
+                     ) AS rank_in_outlet
+                FROM articles a
+                JOIN outlets      o  ON o.id       = a.outlet_id
+                JOIN story_outlets so ON so.story_id = a.story_id
+                LEFT JOIN story_comparisons sc ON sc.story_id = a.story_id
+                LEFT JOIN home_top          ht ON ht.story_id = a.story_id
+               WHERE a.processing_state = 'clustered'
+                 AND a.attempt_count   < :max_attempts
+                 AND so.n_outlets      >= :min_outlets
+                 AND a.story_id IN ({ids_sql})
+            ),
+            with_story_rank AS (
+              SELECT *,
+                     ROW_NUMBER() OVER (
+                         PARTITION BY story_id
+                         ORDER BY rank_in_outlet ASC,
+                                  published_at   DESC,
+                                  article_id     ASC
+                     ) AS rank_in_story
+                FROM with_outlet_rank
             )
-            SELECT a.id                                    AS article_id,
-                   o.slug                                  AS outlet_slug,
-                   CASE WHEN sc.story_id IS NOT NULL
-                        THEN 1 ELSE 2 END                  AS priority_tier
-              FROM articles a
-              JOIN outlets      o  ON o.id       = a.outlet_id
-              JOIN story_outlets so ON so.story_id = a.story_id
-              LEFT JOIN story_comparisons sc
-                     ON sc.story_id = a.story_id
-             WHERE a.processing_state = 'clustered'
-               AND a.attempt_count < :max_attempts
-               AND so.n_outlets >= :min_outlets
-               AND a.story_id IN ({ids_sql})
+            SELECT article_id, outlet_slug
+              FROM with_story_rank
+             WHERE rank_in_story <= :per_story_cap
              ORDER BY
-               CASE WHEN sc.story_id IS NOT NULL THEN 1 ELSE 2 END ASC,
-               so.n_outlets       DESC,
-               so.n_articles      DESC,
-               so.latest_published DESC,
-               a.published_at     DESC,
-               a.id               ASC
+               CASE
+                 WHEN is_home_top    THEN {_PRIORITY_HOME_TOP}
+                 WHEN has_comparison THEN {_PRIORITY_NON_HOME_WITH_COMPARISON}
+                 ELSE                     {_PRIORITY_NON_HOME_NO_COMPARISON}
+               END,
+               n_outlets        DESC,
+               n_articles       DESC,
+               latest_published DESC,
+               rank_in_story    ASC,
+               article_id       ASC
              LIMIT :lim
         """)
         rows = session.execute(
             scoped_sql,
             {
-                "lim": batch_limit,
-                "max_attempts": MAX_ATTEMPTS,
-                "min_outlets": COVERAGE_PRIORITY_MIN_OUTLETS,
+                "lim":            batch_limit,
+                "max_attempts":   MAX_ATTEMPTS,
+                "min_outlets":    COVERAGE_PRIORITY_MIN_OUTLETS,
+                "home_top_n":     HOME_PRIORITY_TOP_N,
+                "per_story_cap":  per_story_cap,
             },
         ).all()
     return [(int(r.article_id), r.outlet_slug) for r in rows]

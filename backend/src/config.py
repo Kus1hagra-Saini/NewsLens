@@ -78,6 +78,24 @@ class Settings(BaseSettings):
         description="Max stories compared by the LLM per --once cycle.",
     )
 
+    # Max clustered articles any single story may contribute to a single
+    # enrich_articles call. Guard against one high-coverage story (e.g.
+    # a 9-outlet, 100-article story) monopolising the per-cycle enrich
+    # budget while the rest of the Home-visible stories accumulate
+    # with zero framing. The selector pairs this with Home-priority
+    # ordering so the first 7-8 Home stories are reached each cycle,
+    # with up to this many articles each — see
+    # ``_PRIORITIZED_SELECT_SQL`` in ``src/ingestion/enrich.py``.
+    llm_enrich_per_story_cap: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Max clustered articles taken from any single story per "
+            "enrich_articles call. Prevents one large story from "
+            "consuming the full llm_enrich_budget_per_run."
+        ),
+    )
+
     # --- API --------------------------------------------------------------
     cors_origins: str = Field(
         default="http://localhost:5173",

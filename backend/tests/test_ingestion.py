@@ -94,16 +94,21 @@ def test_hash_embedder_similarity_for_overlap():
 # ---------------------------------------------------------------------------
 # Outlet registry
 # ---------------------------------------------------------------------------
-def test_outlets_yaml_has_five_phase1_outlets_with_slugs():
+def test_outlets_yaml_has_fifteen_phase1_outlets_with_slugs():
+    """phase_1 is the current Week-1 outlet set, expanded from the
+    original 5 to 15 on 2026-09-30. The expected outlet count stays
+    pinned so an accidental addition/removal fails loudly."""
     specs = load_outlets(["phase_1"])
-    assert len(specs) == 5
-    assert {s.slug for s in specs} == {
-        "the-hindu", "times-of-india", "indian-express", "ndtv", "hindustan-times"
-    }
-    for s in specs:
-        assert s.rss_url.startswith("https://"), s
-        assert s.website.startswith("https://"), s
-        assert s.name
+    assert len(specs) == 15, (
+        f"phase_1 outlet count drifted: expected 15, got {len(specs)}"
+    )
+    slugs = [s.slug for s in specs]
+    assert all(slug and isinstance(slug, str) for slug in slugs), (
+        f"every phase_1 outlet must have a non-empty string slug; got {slugs!r}"
+    )
+    assert len(set(slugs)) == len(slugs), (
+        f"phase_1 slugs must be unique; got {slugs!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

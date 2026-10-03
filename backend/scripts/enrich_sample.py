@@ -1,18 +1,18 @@
-"""enrich_sample.py — Part 2 controlled Groq-enrichment harness.
+"""enrich_sample.py — Part 2 controlled Gemini-enrichment harness.
 
 Runs the EXISTING production enrichment pipeline against a bounded,
 diverse sample of ~20 clustered articles selected from the live Neon
 dev database. Uses:
 
-  - ``src.ingestion.enrich.GroqClient``   (real Groq SDK client)
+  - ``src.ingestion.enrich.GeminiClient``   (real Gemini SDK client)
   - ``src.ingestion.enrich.enrich_articles``   (production dispatch fn)
   - ``src.prompts.enrich_v1.txt``   (versioned prompt)
   - ``src.ingestion.enrich_schema.EnrichmentResponse``   (validator)
 
 There is NO fake or mock LLM path anywhere in this script. If
-``GROQ_API_KEY`` is missing, the script refuses to run.
+``GEMINI_API_KEY`` is missing, the script refuses to run.
 
-Never prints DATABASE_URL, GROQ_API_KEY, or any secret. Prints the
+Never prints DATABASE_URL, GEMINI_API_KEY, or any secret. Prints the
 selected article IDs, outlet, story_id, headline (no article bodies)
 and a compact post-run report from the DB.
 
@@ -46,7 +46,7 @@ from src.config import get_settings                        # noqa: E402
 from src.db.models import AnalysisRun                     # noqa: E402
 from src.ingestion.enrich import (                         # noqa: E402
     DEFAULT_PROMPT_VERSION,
-    GroqClient,
+    GeminiClient,
     enrich_articles,
 )
 
@@ -108,7 +108,7 @@ def _grounding_normalize(s: str) -> str:
 # Env check
 # ---------------------------------------------------------------------------
 def env_check() -> int:
-    """Verify DATABASE_URL, GROQ_API_KEY, LLM_MODEL are set. Never print values."""
+    """Verify DATABASE_URL, GEMINI_API_KEY, LLM_MODEL are set. Never print values."""
     try:
         settings = get_settings()
     except Exception as exc:
@@ -117,17 +117,17 @@ def env_check() -> int:
         return 1
 
     db_ok = bool(settings.database_url)
-    groq_ok = bool(settings.groq_api_key)
+    gemini_ok = bool(settings.gemini_api_key)
     model_ok = bool(settings.llm_model)
 
-    # LLM_MODEL is a model NAME (e.g. 'llama-3.1-70b-versatile'), not a
+    # LLM_MODEL is a model NAME (e.g. 'gemini-2.5-flash-lite'), not a
     # secret — printing it is safe and useful.
     print(f"env: DATABASE_URL      set={db_ok}")
-    print(f"env: GROQ_API_KEY      set={groq_ok}  "
-          f"length={len(settings.groq_api_key) if groq_ok else 0}")
+    print(f"env: GEMINI_API_KEY    set={gemini_ok}  "
+          f"length={len(settings.gemini_api_key) if gemini_ok else 0}")
     print(f"env: LLM_MODEL         set={model_ok}  value={settings.llm_model!r}")
 
-    ok = db_ok and groq_ok and model_ok
+    ok = db_ok and gemini_ok and model_ok
     print(f"env: overall           {'OK' if ok else 'MISSING'}")
     return 0 if ok else 1
 
@@ -684,21 +684,21 @@ def main() -> int:
         print_sample_table(sample)
 
         if args.dry_run:
-            print("--dry-run: skipping Groq calls.")
+            print("--dry-run: skipping Gemini calls.")
             return 0
 
         # --- real run ------------------------------------------------------
-        if not settings.groq_api_key:
-            print("GROQ_API_KEY is not set — refusing to run.")
+        if not settings.gemini_api_key:
+            print("GEMINI_API_KEY is not set — refusing to run.")
             return 1
         # Sanity: model_id is set to something safe.
         print(f"model_id: {settings.llm_model!r}")
         print(f"prompt_version: {DEFAULT_PROMPT_VERSION!r}")
-        print(f"about to call Groq for {len(sample_ids)} articles ...")
+        print(f"about to call Gemini for {len(sample_ids)} articles ...")
 
         started = datetime.now(tz=timezone.utc)
         with Session_() as session:
-            llm = GroqClient(api_key=settings.groq_api_key)
+            llm = GeminiClient(api_key=settings.gemini_api_key)
             analyzed, failed_perm = enrich_articles(
                 session,
                 llm=llm,
