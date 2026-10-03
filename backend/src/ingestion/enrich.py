@@ -14,9 +14,10 @@ Design notes (arch §10, §17):
   - Retry semantics reuse the ``attempt_count`` / ``state_error``
     convention from ``fetch.py`` (the same 3-strike rule from
     Appendix A). No new state, no new columns.
-  - The Groq client is instantiated lazily, so the module imports
-    cleanly in environments without the groq SDK or without an API key
-    (which matters for unit tests, which inject a fake ``LLMClient``).
+  - The Gemini client is instantiated lazily (the ``google-genai`` SDK
+    is imported inside ``__post_init__``), so this module imports
+    cleanly in environments without the SDK or without an API key —
+    which matters for unit tests that inject a fake ``LLMClient``.
 
 Priority (coverage priority):
   Production selection prefers articles that will produce comparative
@@ -30,12 +31,13 @@ Priority (coverage priority):
   Single-outlet stories are excluded from the priority query entirely.
 
 Rate limit handling:
-  A Groq ``RateLimitError`` is an infrastructure signal, not an article-
-  content problem. It does NOT bump ``attempt_count``. The article
-  remains in ``clustered`` state with ``state_error`` recording the
-  429; ``enrich_articles`` sets ``result.rate_limited=True`` and the
-  orchestrator uses that to stop the enrich drain loop for the current
-  cycle. The next cycle picks the article up again.
+  A Gemini 429 (``google.genai.errors.ClientError`` with ``code=429``
+  / ``status='RESOURCE_EXHAUSTED'``) is an infrastructure signal, not
+  an article-content problem. It does NOT bump ``attempt_count``. The
+  article remains in ``clustered`` state with ``state_error`` recording
+  the 429; ``enrich_articles`` sets ``result.rate_limited=True`` and
+  the orchestrator uses that to stop the enrich drain loop for the
+  current cycle. The next cycle picks the article up again.
 """
 
 from __future__ import annotations
@@ -87,18 +89,30 @@ class LLMClient(Protocol):
 
 
 def _is_rate_limit_error(exc: BaseException) -> bool:
-    """True for HTTP 429 / Groq RateLimitError-shaped exceptions.
+    """True for an HTTP-429 / rate-limit-shaped exception from any
+    supported provider.
 
-    Classified by exception class name substring so we don't hard-depend
-    on the ``groq`` SDK's exception hierarchy layout (tests inject a
-    lookalike class literally named ``RateLimitError``). Also honours
-    an explicit ``status_code == 429`` attribute for defence in depth.
+    Three independent signals, each defensive:
+      * class name contains ``ratelimit`` — covers test doubles named
+        ``RateLimitError`` and any SDK that follows that convention;
+      * ``code == 429`` or ``status_code == 429`` on the exception —
+        google-genai uses ``.code``, other SDKs use ``.status_code``;
+      * ``.status`` is the Gemini-flavoured ``RESOURCE_EXHAUSTED``
+        enum string that google-genai sets alongside ``code=429``.
+
+    Any one match is sufficient. Keeps the module decoupled from a
+    specific SDK's exception-class layout so test doubles stay simple.
     """
     name = type(exc).__name__.lower()
     if "ratelimit" in name:
         return True
-    sc = getattr(exc, "status_code", None)
-    return sc == 429
+    for attr in ("status_code", "code"):
+        if getattr(exc, attr, None) == 429:
+            return True
+    status_str = getattr(exc, "status", None)
+    if isinstance(status_str, str) and status_str.upper() == "RESOURCE_EXHAUSTED":
+        return True
+    return False
 
 
 @dataclass
@@ -121,59 +135,99 @@ class EnrichBatchResult:
 
 
 @dataclass
-class GroqClient:
-    """Lazy-init wrapper around the groq SDK.
+class GeminiClient:
+    """Lazy-init wrapper around the ``google-genai`` SDK.
 
-    The groq package is imported inside ``__post_init__`` so this module
-    imports cleanly in environments without the SDK (e.g. CI without the
-    dep, or tests that stub out the LLM). One retry on transient
-    network errors; other exceptions propagate to the caller.
+    The SDK is imported inside ``__post_init__`` so this module imports
+    cleanly in environments without the dep (CI stubs, tests that
+    inject a fake ``LLMClient``). One retry on transient
+    timeout/connection errors; other exceptions propagate.
+
+    JSON structured output is forced by
+    ``GenerateContentConfig.response_mime_type='application/json'`` —
+    the Gemini equivalent of Groq's ``response_format={'type':
+    'json_object'}``. The downstream pipeline still parses
+    ``response.text`` as JSON and validates it with the existing
+    Pydantic ``EnrichmentResponse`` / ``ComparisonResponse`` models;
+    the structured-output guarantee shifts from provider to provider
+    but the validation layer is unchanged.
     """
 
     api_key: str
     _client: Any = field(default=None, init=False, repr=False)
+    _types: Any = field(default=None, init=False, repr=False)
+    _errors: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        from groq import Groq  # local import — see class docstring
-        # Never let the api_key end up in a repr or __str__.
-        self._client = Groq(api_key=self.api_key, timeout=DEFAULT_TIMEOUT_S)
+        # Local imports — the SDK is optional at import time (see class
+        # docstring). Keep handles to ``types`` and ``errors`` so each
+        # ``complete`` call doesn't pay re-import cost.
+        from google import genai
+        from google.genai import errors as genai_errors
+        from google.genai import types as genai_types
+        self._client = genai.Client(api_key=self.api_key)
+        self._types = genai_types
+        self._errors = genai_errors
 
     def __repr__(self) -> str:  # never leak the key via repr
-        return "GroqClient(api_key=<REDACTED>)"
+        return "GeminiClient(api_key=<REDACTED>)"
 
     def complete(self, *, model: str, prompt: str, timeout_s: float) -> str:
-        """Chat-complete with response_format=json_object; retry once on
-        transient timeout/connection errors.
+        """Generate JSON content; retry once on transient network errors.
 
-        A ``RateLimitError`` propagates immediately — the Groq SDK
-        already retries 429s internally with Retry-After honouring, so
-        a second retry inside this client is wasted work. The caller
-        (``enrich_articles``) treats 429s as flow-control, not article
-        failures.
+        A rate-limit error (``ClientError`` with ``code=429`` /
+        ``status='RESOURCE_EXHAUSTED'``) propagates immediately —
+        google-genai honours ``Retry-After`` server-side where
+        available, and the orchestrator treats 429s as flow-control
+        (see ``_is_rate_limit_error`` + ``_record_llm_failure``).
+
+        A client-caller ``model not found`` / ``invalid argument``
+        / auth-rejection error (any ``ClientError`` with ``code`` in
+        the 4xx range OTHER than 429) is non-retryable: those are
+        article-content-independent failures that will never succeed
+        on retry with the same inputs.
         """
         assert self._client is not None
         last_transient: Exception | None = None
+        http_options = self._types.HttpOptions(
+            # SDK takes milliseconds; our pipeline threads a float
+            # seconds value through for parity with the previous
+            # provider.
+            timeout=int(max(1.0, timeout_s) * 1000),
+        )
+        config = self._types.GenerateContentConfig(
+            response_mime_type="application/json",
+            http_options=http_options,
+        )
         for attempt in (1, 2):
             try:
-                resp = self._client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"},
-                    timeout=timeout_s,
+                resp = self._client.models.generate_content(
+                    model=model, contents=prompt, config=config,
                 )
-                return resp.choices[0].message.content or ""
+                return resp.text or ""
             except Exception as exc:
                 # 429s propagate — SDK already retried; extra client
                 # retries can't help and only extend runtime.
                 if _is_rate_limit_error(exc):
                     raise
-                # Classify by exception name so we don't hard-depend on
-                # the groq exception hierarchy layout.
+                # Non-429 ``ClientError`` (4xx) is permanent: auth
+                # rejection, invalid model id, malformed prompt. These
+                # won't succeed on a retry with the same inputs.
+                if isinstance(exc, self._errors.APIError):
+                    code = getattr(exc, "code", None)
+                    if isinstance(code, int) and 400 <= code < 500:
+                        raise
+                # Everything else (timeouts, connection resets, 5xx,
+                # SDK-level glitches) gets ONE retry. Classify by
+                # exception name so we don't hard-depend on the SDK's
+                # exception hierarchy layout.
                 name = type(exc).__name__.lower()
                 is_transient = any(
                     tok in name
-                    for tok in ("timeout", "connection", "apitimeout",
-                                "apiconnection")
+                    for tok in (
+                        "timeout", "connection", "apitimeout",
+                        "apiconnection", "servererror", "serviceunavailable",
+                    )
                 )
                 if attempt == 1 and is_transient:
                     log.warning("enrich: transient LLM error, one retry: %s",

@@ -56,7 +56,7 @@ def test_config_default_freshness_is_72_hours():
     # required fields provided as placeholders so validation passes.
     s = Settings(
         database_url="postgresql://u:p@h/db",
-        groq_api_key="dummy",
+        gemini_api_key="dummy",
         llm_model="dummy",
         _env_file=None,  # do not read .env from disk
     )
@@ -68,7 +68,7 @@ def test_config_freshness_is_overridable(monkeypatch):
     monkeypatch.setenv("HOME_FRESHNESS_HOURS", "24")
     s = Settings(
         database_url="postgresql://u:p@h/db",
-        groq_api_key="dummy",
+        gemini_api_key="dummy",
         llm_model="dummy",
         _env_file=None,
     )
@@ -81,7 +81,7 @@ def test_config_freshness_rejects_non_positive(monkeypatch):
     with pytest.raises(Exception):  # pydantic ValidationError
         Settings(
             database_url="postgresql://u:p@h/db",
-            groq_api_key="dummy",
+            gemini_api_key="dummy",
             llm_model="dummy",
             _env_file=None,
         )

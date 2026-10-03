@@ -44,7 +44,7 @@ def api_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         pytest.skip("DATABASE_URL not set — API tests need the real DB")
 
     monkeypatch.setenv("DATABASE_URL",  real_db)
-    monkeypatch.setenv("GROQ_API_KEY",  "test-api-key-not-used")
+    monkeypatch.setenv("GEMINI_API_KEY",  "test-api-key-not-used")
     monkeypatch.setenv("LLM_MODEL",     "test-model")
     monkeypatch.setenv("CORS_ORIGINS",  "http://localhost:5173")
 

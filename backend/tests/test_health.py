@@ -9,7 +9,7 @@ DSN tests are asymmetric on purpose:
     real asyncpg connect() raises TypeError on unknown kwargs.
 
 Uses a monkeypatched environment so importing src.main does not require a
-real DATABASE_URL, GROQ_API_KEY, or LLM_MODEL at CI startup.
+real DATABASE_URL, GEMINI_API_KEY, or LLM_MODEL at CI startup.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://x:y@localhost/x")
-    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "test-model")
     monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173")
 
@@ -164,7 +164,7 @@ def test_settings_sync_and_async_properties(monkeypatch):
         "DATABASE_URL",
         "postgresql://u:p@h/d?sslmode=require&channel_binding=require",
     )
-    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv("LLM_MODEL", "x")
     from src.config import get_settings
     get_settings.cache_clear()
@@ -184,7 +184,7 @@ def test_settings_async_connect_args_empty_without_sslmode(monkeypatch):
     """When there is no sslmode in the DSN, async_connect_args is empty
     and asyncpg applies its own default."""
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/d")
-    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv("LLM_MODEL", "x")
     from src.config import get_settings
     get_settings.cache_clear()
@@ -206,7 +206,7 @@ def test_session_engine_receives_connect_args(monkeypatch):
         "DATABASE_URL",
         "postgresql://u:p@h/d?sslmode=require&channel_binding=require",
     )
-    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv("LLM_MODEL", "x")
 
     from src.config import get_settings

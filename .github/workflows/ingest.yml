@@ -46,7 +46,7 @@ jobs:
     # GitHub Actions run — the intended behaviour.
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       LLM_MODEL:    ${{ secrets.LLM_MODEL }}
 
     steps:

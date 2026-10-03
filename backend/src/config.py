@@ -51,22 +51,31 @@ class Settings(BaseSettings):
     database_url: str = Field(..., description="Neon Postgres URL (asyncpg).")
 
     # --- LLM --------------------------------------------------------------
-    groq_api_key: str = Field(..., description="Groq API key for enrich/compare calls.")
-    llm_model: str = Field(..., description="Groq model string; recorded on analysis_runs rows.")
+    # Gemini (google-genai) is the LLM provider as of 2026-10-03. The
+    # field name is ``gemini_api_key``, pydantic-settings maps that to
+    # the ``GEMINI_API_KEY`` env var automatically. ``llm_model`` is a
+    # free-form model string recorded verbatim on ``analysis_runs`` rows
+    # (e.g. ``gemini-2.5-flash-lite``).
+    gemini_api_key: str = Field(
+        ..., description="Gemini API key for enrich/compare calls."
+    )
+    llm_model: str = Field(
+        ..., description="Gemini model string; recorded on analysis_runs rows.",
+    )
 
-    # Per-run cap on Groq calls for the two LLM stages. The orchestrator
+    # Per-run cap on LLM calls for the two LLM stages. The orchestrator
     # respects these budgets so a single --once cycle cannot make hundreds
-    # of Groq calls when a backlog exists. Remaining eligible articles /
+    # of calls when a backlog exists. Remaining eligible articles /
     # stories simply stay eligible for the next cycle.
     llm_enrich_budget_per_run: int = Field(
         default=20,
         ge=0,
-        description="Max clustered articles enriched by Groq per --once cycle.",
+        description="Max clustered articles enriched by the LLM per --once cycle.",
     )
     llm_compare_budget_per_run: int = Field(
         default=10,
         ge=0,
-        description="Max stories compared by Groq per --once cycle.",
+        description="Max stories compared by the LLM per --once cycle.",
     )
 
     # --- API --------------------------------------------------------------

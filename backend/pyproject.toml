@@ -32,7 +32,10 @@ dependencies = [
     # NLP / LLM
     "sentence-transformers>=3.0",
     "scikit-learn>=1.5",
-    "groq>=0.11",
+    # Google Gen AI SDK (replaces the groq SDK as of 2026-10-03 — the
+    # LLM provider was migrated to Gemini). Credentials come from
+    # ``GEMINI_API_KEY`` and the model string from ``LLM_MODEL``.
+    "google-genai>=2.0",
 
     # Export
     "reportlab>=4.2",

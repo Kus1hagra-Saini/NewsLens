@@ -22,7 +22,7 @@ Design notes (arch §9 / §10 step 9 / §17 / Appendix C):
     articles in ``analyzed``. The next pipeline cycle retries them.
     This mirrors arch §10: "On failure at any step, the article stays
     in its current state; the next run picks it up."
-  - The LLM client (``LLMClient`` Protocol and ``GroqClient`` impl)
+  - The LLM client (``LLMClient`` Protocol and ``GeminiClient`` impl)
     is imported from ``enrich.py`` — one implementation for the whole
     pipeline.
 
@@ -62,7 +62,7 @@ from src.db.models import (
 )
 from src.ingestion.compare_schema import ComparisonResponse
 # Reuse the exact LLM abstractions used by enrichment.
-from src.ingestion.enrich import GroqClient, LLMClient  # noqa: F401 (re-export)
+from src.ingestion.enrich import GeminiClient, LLMClient  # noqa: F401 (re-export)
 
 log = logging.getLogger(__name__)
 

@@ -42,7 +42,7 @@ from src.db.models import IngestionRun, Outlet
 from src.ingestion.cluster import cluster_articles
 from src.ingestion.compare import compare_stories
 from src.ingestion.embed import Embedder, HashEmbedder, MiniLMEmbedder, embed_articles
-from src.ingestion.enrich import GroqClient, LLMClient, enrich_articles
+from src.ingestion.enrich import GeminiClient, LLMClient, enrich_articles
 from src.ingestion.fetch import HttpxFetcher, discover_articles, extract_articles
 from src.ingestion.log import setup_logging
 from src.ingestion.outlets import load_outlets
@@ -85,11 +85,11 @@ def run_once(
 
     ``llm_factory`` is called at most once to produce the LLM client
     used for both enrichment and comparison. Tests inject a fake here.
-    In production it defaults to ``GroqClient(api_key=...)`` when the
-    ``GROQ_API_KEY`` setting is populated; if the key is missing, the
-    enrich and compare stages are silently skipped (with a warning
-    logged) — the earlier stages still run so pipeline development
-    without an API key stays possible.
+    In production it defaults to ``GeminiClient(api_key=...)`` when
+    the ``GEMINI_API_KEY`` setting is populated; if the key is
+    missing, the enrich and compare stages are silently skipped (with
+    a warning logged) — the earlier stages still run so pipeline
+    development without an API key stays possible.
     """
     settings = get_settings()
     if not settings.ingestion_enabled:
@@ -124,7 +124,7 @@ def run_once(
     }
 
     # Build the LLM client once and share between enrich + compare.
-    # A missing GROQ_API_KEY or a construction failure downgrades to
+    # A missing GEMINI_API_KEY or a construction failure downgrades to
     # "no LLM" instead of crashing the run — the earlier stages still
     # add value and the next run can pick up the LLM work.
     llm: _CountingLLM | None = None
@@ -133,12 +133,12 @@ def run_once(
         try:
             if llm_factory is not None:
                 inner = llm_factory()
-            elif settings.groq_api_key:
-                inner = GroqClient(api_key=settings.groq_api_key)
+            elif settings.gemini_api_key:
+                inner = GeminiClient(api_key=settings.gemini_api_key)
             else:
                 inner = None
                 log.warning(
-                    "run: GROQ_API_KEY not set — skipping enrich + compare stages"
+                    "run: GEMINI_API_KEY not set — skipping enrich + compare stages"
                 )
             if inner is not None:
                 llm = _CountingLLM(inner)
