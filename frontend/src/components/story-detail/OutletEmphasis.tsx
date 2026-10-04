@@ -18,9 +18,14 @@ import { Chip, StorySection } from "./primitives";
  *
  * Editorial visualisation of ``story_comparisons.coverage_matrix``.
  * Each outlet is a stanza in a stacked list: outlet name on the left,
- * their strongest weighted themes on the right. When theme weights are
- * present we render them as short proportional bars; when they aren't
- * we fall back to plain chip labels so older analyses still render.
+ * their top-ranked themes on the right as compact pills. The backend
+ * matrix frequently includes zero-weighted themes as a shape artefact
+ * (every outlet grades every theme the comparison enumerated, even
+ * ones they didn't actually cover); we drop those at the presentation
+ * layer and cap each outlet at the top 5 remaining themes so this
+ * section reads as a scannable comparison rather than a raw analytics
+ * dump. The backend-ranked order from ``outletsEmphasisFromMatrix``
+ * (weight DESC, then stable alpha) is preserved.
  *
  * We also surface a small "Evidence from their coverage" expander
  * seeded with actual evidence snippets pulled from that outlet's
@@ -31,6 +36,23 @@ import { Chip, StorySection } from "./primitives";
  * vertical stack; a page with 12 outlets reads as an editorial list,
  * not a wide comparison table.
  */
+
+/** Max themes rendered per outlet in this section. See module docstring. */
+const MAX_THEMES_PER_OUTLET = 5;
+
+/**
+ * Presentation-layer filter: drop zero-weight themes, cap at
+ * MAX_THEMES_PER_OUTLET, keep the backend ranking. ``weight === null``
+ * means the matrix cell was a plain string list (legacy shape without
+ * weights) — we keep those entries because there's no weight to
+ * discriminate against.
+ */
+function visibleThemes(themes: EmphasisItem[]): EmphasisItem[] {
+  return themes
+    .filter((t) => t.weight === null || t.weight > 0)
+    .slice(0, MAX_THEMES_PER_OUTLET);
+}
+
 export function OutletEmphasis({
   comparison,
   articles,
@@ -70,38 +92,40 @@ export function OutletEmphasis({
 
 function OutletEmphasisEntry({ row }: { row: OutletEmphasisRow }) {
   const [expanded, setExpanded] = useState(false);
-  const hasWeights = row.themes.some((t) => t.weight !== null);
+  const visible = useMemo(() => visibleThemes(row.themes), [row.themes]);
   const evidencePreview = row.supportingEvidence.slice(0, 3);
   const evidenceCount = evidencePreview.length;
+
+  // Skip the whole outlet row when there is nothing meaningful to
+  // show in this section — avoids leaving a "huge empty block" for
+  // outlets whose matrix cell was all zeros AND whose articles
+  // produced no evidence snippets.
+  if (visible.length === 0 && evidenceCount === 0) return null;
 
   return (
     <li className="py-6 md:py-7">
       <div className="grid grid-cols-1 gap-x-8 md:grid-cols-[minmax(0,180px)_minmax(0,1fr)]">
-        {/* Left column: outlet identity */}
+        {/* Left column: outlet identity (theme-count line intentionally
+            removed — the number is a shape artefact of the backend
+            matrix, not a reader-useful signal). */}
         <div className="mb-3 md:mb-0">
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-primary">
             {row.name}
           </div>
-          <div className="tabular mt-1 text-[11px] text-ink-muted">
-            {row.themes.length} theme{row.themes.length === 1 ? "" : "s"}
-          </div>
         </div>
 
-        {/* Right column: themes */}
+        {/* Right column: top themes as compact pills, wrapping
+            naturally on narrower viewports. Uses the shared ``Chip``
+            primitive so this section stays visually consistent with
+            the rest of the Story Detail design system. */}
         <div className="min-w-0">
-          {row.themes.length === 0 ? (
+          {visible.length === 0 ? (
             <p className="text-[12.5px] text-ink-muted">
               No emphasised themes surfaced for this outlet.
             </p>
-          ) : hasWeights ? (
-            <ul className="space-y-2.5">
-              {row.themes.map((t, i) => (
-                <ThemeBar key={`${t.label}-${i}`} item={t} />
-              ))}
-            </ul>
           ) : (
             <div className="flex flex-wrap gap-2">
-              {row.themes.map((t, i) => (
+              {visible.map((t, i) => (
                 <Chip key={`${t.label}-${i}`}>{t.label}</Chip>
               ))}
             </div>
@@ -139,36 +163,6 @@ function OutletEmphasisEntry({ row }: { row: OutletEmphasisRow }) {
             </div>
           ) : null}
         </div>
-      </div>
-    </li>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// A single weighted theme rendered as a bar.
-// ---------------------------------------------------------------------------
-
-function ThemeBar({ item }: { item: EmphasisItem }) {
-  const weight = item.weight ?? 0;
-  const pct = Math.max(6, Math.min(100, Math.round(weight * 100)));
-
-  return (
-    <li className="grid grid-cols-[minmax(0,1fr)_36px] items-center gap-x-3">
-      <div className="min-w-0">
-        <div className="mb-1 flex items-baseline gap-3">
-          <span className="truncate text-[13px] leading-tight text-ink-primary">
-            {item.label}
-          </span>
-        </div>
-        <div className="relative h-[3px] w-full overflow-hidden rounded-full bg-surface-inset">
-          <span
-            className="absolute inset-y-0 left-0 rounded-full bg-ink-primary/70"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-      </div>
-      <div className="tabular text-right text-[11px] font-medium text-ink-muted">
-        {item.weight === null ? "—" : `${Math.round(weight * 100)}`}
       </div>
     </li>
   );
