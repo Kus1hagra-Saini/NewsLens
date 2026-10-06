@@ -10,7 +10,6 @@ import type {
   DashboardOverview,
   PaginatedStories,
   StoryDetail,
-  StorySummary,
   TrendsResponse,
 } from "./types";
 
@@ -19,7 +18,6 @@ export const queryKeys = {
   trends: (window: number) => ["trends", window] as const,
   stories: (page: number, limit: number) => ["stories", page, limit] as const,
   story: (id: number) => ["story", id] as const,
-  positiveStories: (limit: number) => ["positive-stories", limit] as const,
   // Home fetches /stories with `fresh=true`; keep the cache key
   // distinct from `stories(1, HOMEPAGE_STORY_LIMIT)` so a future
   // caller that happens to request page 1 at the same limit doesn't
@@ -98,28 +96,6 @@ export function useHomeStories() {
       ),
     staleTime: 30_000,
     placeholderData: keepPreviousData,
-  });
-}
-
-/**
- * Positive Stories — deterministic ranked feed of stories whose
- * cross-outlet coverage has been predominantly positive over the last
- * few days. Returns the same ``StorySummary`` shape as ``/stories``
- * so cards and hooks are reused verbatim.
- *
- * Ordering is applied server-side and MUST be preserved by callers;
- * do not sort the returned list on the client.
- *
- * The default limit matches the backend's ``DEFAULT_LIMIT`` (12) and
- * is safely under the server-side cap of 40.
- */
-export const POSITIVE_STORIES_DEFAULT_LIMIT = 12;
-
-export function usePositiveStories(limit: number = POSITIVE_STORIES_DEFAULT_LIMIT) {
-  return useQuery<StorySummary[]>({
-    queryKey: queryKeys.positiveStories(limit),
-    queryFn: () => apiGet<StorySummary[]>(`/positive-stories?limit=${limit}`),
-    staleTime: 60_000,
   });
 }
 

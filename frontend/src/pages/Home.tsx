@@ -27,11 +27,6 @@ import type { StorySummary } from "@/api/types";
  *   - Sections are disjoint on the page (a story appears at most once)
  *     so the homepage doesn't feel repetitive; the parent picks Hot
  *     Now first, then fills Just Updated / Discover from what remains.
- *
- * Positive Stories has its own dedicated page (``/positive``) and is
- * intentionally NOT surfaced as a Home section: Home already carries
- * three ranked feeds and a fourth would crowd the hierarchy. A reader
- * discovers Positive Stories via the top nav.
  */
 const HOT_NOW_COUNT = 8;     // 1 hero + 3 secondary + up to 4 tail rows
 const JUST_UPDATED_COUNT = 6;
